@@ -1,0 +1,6 @@
+[freerdp]
+fromSources=True
+with_cairo=False
+with_sdl2=False
+with_sdl3=False
+with_fido2=False
