@@ -1,4 +1,5 @@
-project('rdpmocks', 'cpp')
+project('rdpmocks', 'cpp',
+    version: '0.1')
 
 winpr_deps = dependency('winpr3')
 winpr_tools_deps = dependency('winpr-tools3')

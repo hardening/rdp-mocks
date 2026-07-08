@@ -187,6 +187,9 @@ int RdpClientMock::run() {
 			pollDelay = (1 + pollCmdChannelStartDate_ - now);
 		}
 
+		DWORD nrdpHandles = freerdp_get_event_handles(&rdpClient_->context_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+		if (nrdpHandles)
+			nhandles += nrdpHandles;
 		DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, pollDelay);
 
 		switch (status) {
@@ -206,11 +209,13 @@ int RdpClientMock::run() {
 					break;
 				case CommandChannel::POLL_ERROR:
 				case CommandChannel::POLL_CLOSED:
-					doRun_ = FALSE;
+					doRun_ = false;
 				}
 			}
 		}
 
+		if (!freerdp_check_event_handles(&rdpClient_->context_))
+			doRun_ = false;
 	}
 
 	if (connectionEstablished_) {
