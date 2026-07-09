@@ -89,7 +89,7 @@ int RdpClientMock::_client_stop(rdpContext *context)
 {
 	return 0;
 }
-
+#ifdef HAVE_CLIENT_MONITOR_STATES
 void RdpClientMock::_on_state_changed(void *context, const StateChangedEventArgs *e) {
 	/*WLog_INFO(TAG, "StateChanged: %s -> %s", freerdp_state_string(e->oldState),
 	          freerdp_state_string(e->newState));*/
@@ -108,8 +108,8 @@ void RdpClientMock::_on_connection_state_change(void *context, const ConnectionS
 	if (mock->monitorConnectionState_)
 		mock->output_->sendNotification("connectionState", "state=" + std::to_string(e->state) +
 				" active=" + std::to_string(e->active));
-
 }
+#endif
 
 void RdpClientMock::_on_connection_result(void *context, const ConnectionResultEventArgs *e) {
 	//WLog_INFO(TAG, "ConnectionResult: %d", e->result);
@@ -120,8 +120,10 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 		return FALSE;
 
 	wPubSub *pubSub = instance->context->pubSub;
+#ifdef HAVE_CLIENT_MONITOR_STATES
 	PubSub_SubscribeStateChanged(pubSub, _on_state_changed);
 	PubSub_SubscribeConnectionStateChange(pubSub, _on_connection_state_change);
+#endif
 	PubSub_SubscribeConnectionResult(pubSub, _on_connection_result);
 
 	/* this is a mock client for testing, not a real client acting on behalf of a user: never
@@ -187,6 +189,9 @@ int RdpClientMock::run() {
 			pollDelay = (1 + pollCmdChannelStartDate_ - now);
 		}
 
+		DWORD nrdpHandles = freerdp_get_event_handles(&rdpClient_->context_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+		if (nrdpHandles)
+			nhandles += nrdpHandles;
 		DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, pollDelay);
 
 		switch (status) {
@@ -206,11 +211,13 @@ int RdpClientMock::run() {
 					break;
 				case CommandChannel::POLL_ERROR:
 				case CommandChannel::POLL_CLOSED:
-					doRun_ = FALSE;
+					doRun_ = false;
 				}
 			}
 		}
 
+		if (!freerdp_check_event_handles(&rdpClient_->context_))
+			doRun_ = false;
 	}
 
 	if (connectionEstablished_) {
@@ -327,11 +334,21 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 		mock_->doRun_ = false;
 		mock_->output_->sendResult(true);
 	} else if (cmd == "monitor") {
-		if (args == "states")
+		if (args == "states") {
+#ifdef HAVE_CLIENT_MONITOR_STATES
 			mock_->monitorStates_ = true;
-		else if (args == "connectionState")
+#else
+			WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
+			return FALSE;
+#endif
+		} else if (args == "connectionState") {
+#ifdef HAVE_CLIENT_MONITOR_STATES
 			mock_->monitorConnectionState_ = true;
-		else if (args == "off") {
+#else
+			WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
+			return FALSE;
+#endif
+		} else if (args == "off") {
 			mock_->monitorStates_ = false;
 			mock_->monitorConnectionState_ = false;
 		} else {

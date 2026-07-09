@@ -1,4 +1,5 @@
-project('rdpmocks', 'cpp')
+project('rdpmocks', 'cpp',
+    version: '0.1')
 
 winpr_deps = dependency('winpr3')
 winpr_tools_deps = dependency('winpr-tools3')
@@ -13,7 +14,15 @@ common_lib = library('mock-common',
     'mockOptions.cpp', 'mockOptions.h',
     dependencies: [winpr_deps, freerdp_deps, jsoncpp_deps]
 )
+
+have_clientMonitorState = freerdp_deps.version().version_compare('>= 3.27.0')
+client_defines = []
+if freerdp_deps.version().version_compare('>= 3.27.0')
+    client_defines += ['-DHAVE_CLIENT_MONITOR_STATES']
+endif
+
 rdp_client_mock_exe = executable('rdp-client-mock', 'rdp-client-mock.h', 'rdp-client-mock.cpp',
+    cpp_args: client_defines,
     link_with: common_lib,
     dependencies: [winpr_deps, freerdp_deps, freerdp_client_deps, jsoncpp_deps]
 )

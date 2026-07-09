@@ -4,7 +4,7 @@ rdpmocks_pkgs = {
     UBUNTU_LIKE: ['libjsoncpp-dev']
 }
 ARTIFACTS.append(
-    MesonBuildArtifact('rdp-mocks', ['freerdp3'],
+    MesonBuildArtifact('rdp-mocks', ['freerdp3-artifact'],
         LocalSource('.', do_symlink=True),
         toolchainArtifacts='c++',
         pkgs=rdpmocks_pkgs
