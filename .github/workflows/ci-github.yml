@@ -32,7 +32,7 @@ jobs:
         run: python3 -m pip install accendino
 
       - name: Build RDP mocks
-        run: accendino --prefix=/tmp/rdpmocks --options=rdpmocks.options --targets=rdp-mocks --debug rdp-mocks.accendino
+        run: accendino --prefix=/tmp/rdpmocks --targets=rdp-mocks --debug rdp-mocks.accendino
 
       - name: Run unitary test
         run: meson test -C work/build/Ubuntu-Gcc-x86_64-release/rdp-mocks

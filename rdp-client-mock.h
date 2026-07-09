@@ -44,6 +44,7 @@ struct RdpClientMockContext {
 	RdpClientMock *mock_;
 };
 
+
 /** @brief */
 class RdpClientMock {
 	friend class ClientCommandChannel;
@@ -62,8 +63,10 @@ protected:
 	static BOOL _client_preconnect(freerdp *instance);
 	static BOOL _client_postconnect(freerdp *instance);
 
+#ifdef HAVE_CLIENT_MONITOR_STATES
 	static void _on_state_changed(void *context, const StateChangedEventArgs *e);
 	static void _on_connection_state_change(void *context, const ConnectionStateChangeEventArgs *e);
+#endif
 	static void _on_connection_result(void *context, const ConnectionResultEventArgs *e);
 
 protected:
