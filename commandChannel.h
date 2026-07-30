@@ -65,6 +65,7 @@ public:
 
 	/** utility function to convert a bool either to TREAT_SUCCESS or TREAT_ERROR */
 	static TreatResult toTreatResult(bool v);
+
 protected:
 	int fd_;
 	bool closed_;

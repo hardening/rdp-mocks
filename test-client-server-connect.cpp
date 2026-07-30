@@ -56,7 +56,7 @@ bool spawnMock(const char *path, MockProcess &proc) {
 		snprintf(inputArg, sizeof(inputArg), "--inputFd=%d", cmdPipe[0]);
 		snprintf(outputArg, sizeof(outputArg), "--outputFd=%d", outPipe[1]);
 
-		execl(path, path, inputArg, outputArg, (char*)nullptr);
+		execl(path, path, inputArg, outputArg, (char *)nullptr);
 		perror("execl");
 		_exit(127);
 	}
@@ -170,7 +170,8 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	if (ok) {
 		ok = readLine(client, line, 5000) && line == "RESULT:SUCCESS";
 		if (!ok)
-			fprintf(stderr, "client did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "client did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	if (ok) {
@@ -178,7 +179,8 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:accepted";
 		if (!ok)
-			fprintf(stderr, "server did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "server did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	/* the handshake drives the peer's ReachedState callback through several CONNECTION_STATE
@@ -187,8 +189,8 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	if (ok) {
 		int stateNotifications = 0;
 		const char *statesPrefix = "NOTIFICATION:states:";
-		while (readLine(server, line, 500) &&
-				line.compare(0, strlen(statesPrefix), statesPrefix) == 0)
+		while (
+			readLine(server, line, 500) && line.compare(0, strlen(statesPrefix), statesPrefix) == 0)
 			stateNotifications++;
 		ok = stateNotifications > 0;
 		if (!ok)
@@ -214,7 +216,8 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = line == "NOTIFICATION:debug:hello from test";
 		if (!ok)
-			fprintf(stderr, "server did not report the debug notification (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "server did not report the debug notification (got '%s')\n", line.c_str());
 	}
 
 	sendCommand(client, "quit");
@@ -274,7 +277,8 @@ bool testBitmapUpdate(const char *serverPath, const char *clientPath, const char
 	if (ok) {
 		ok = readLine(client, line, 5000) && line == "RESULT:SUCCESS";
 		if (!ok)
-			fprintf(stderr, "client did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "client did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	if (ok) {
@@ -282,7 +286,8 @@ bool testBitmapUpdate(const char *serverPath, const char *clientPath, const char
 		if (ok)
 			ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:accepted";
 		if (!ok)
-			fprintf(stderr, "server did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "server did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	/* ask the server to send the logo at (0,0) and check the client reports at least one
@@ -301,15 +306,17 @@ bool testBitmapUpdate(const char *serverPath, const char *clientPath, const char
 		 * starts arriving the rest are already queued up back-to-back */
 		int timeoutMs = 5000;
 		while (readLine(client, line, timeoutMs) &&
-				line.compare(0, strlen(graphicsPrefix), graphicsPrefix) == 0) {
+			line.compare(0, strlen(graphicsPrefix), graphicsPrefix) == 0) {
 			updateCount++;
-			if (line.find("left=0 ") != std::string::npos && line.find("top=0 ") != std::string::npos)
+			if (line.find("left=0 ") != std::string::npos &&
+				line.find("top=0 ") != std::string::npos)
 				sawOrigin = true;
 			timeoutMs = 500;
 		}
 		ok = updateCount > 0 && sawOrigin;
 		if (!ok)
-			fprintf(stderr, "client did not report the expected graphics updates (count=%d sawOrigin=%d)\n",
+			fprintf(stderr,
+				"client did not report the expected graphics updates (count=%d sawOrigin=%d)\n",
 				updateCount, sawOrigin);
 	}
 
@@ -368,7 +375,8 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 	ok = ok && sendCommand(target, "authType tls");
 	ok = ok && sendCommand(target, std::string("autoCert ") + targetCertDir);
 	ok = ok && sendCommand(target, "monitor mouse");
-	ok = ok && sendCommand(target, std::string("listen ") + targetHost + ":" + std::to_string(port));
+	ok =
+		ok && sendCommand(target, std::string("listen ") + targetHost + ":" + std::to_string(port));
 
 	/* give both servers a brief moment to actually bind and start listening */
 	usleep(300 * 1000);
@@ -376,7 +384,8 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 	ok = ok && sendCommand(client, "authType tls");
 	ok = ok && sendCommand(client, "user testuser");
 	ok = ok && sendCommand(client, "password testpass");
-	ok = ok && sendCommand(client, std::string("connect ") + frontHost + ":" + std::to_string(port));
+	ok =
+		ok && sendCommand(client, std::string("connect ") + frontHost + ":" + std::to_string(port));
 
 	std::string line;
 	if (ok) {
@@ -384,7 +393,8 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = readLine(front, line, 5000) && line == "RESULT:SUCCESS:accepted";
 		if (!ok)
-			fprintf(stderr, "front did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "front did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	if (ok) {
@@ -392,7 +402,8 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = readLine(target, line, 5000) && line == "RESULT:SUCCESS:accepted";
 		if (!ok)
-			fprintf(stderr, "target did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "target did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	/* the client should transparently follow the redirect inside its blocking connect() call
@@ -400,7 +411,8 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 	if (ok) {
 		ok = readLine(client, line, 5000) && line == "RESULT:SUCCESS";
 		if (!ok)
-			fprintf(stderr, "client did not report a successful (redirected) connection (got '%s')\n",
+			fprintf(stderr,
+				"client did not report a successful (redirected) connection (got '%s')\n",
 				line.c_str());
 	}
 
@@ -434,8 +446,9 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 	rmCertDir(targetCertDir);
 
 	if (!ok || !clientOk || !targetOk || !frontOk) {
-		fprintf(stderr, "redirect TEST FAILED (handshake=%d clientExit=%d targetExit=%d frontExit=%d)\n",
-			ok, clientOk, targetOk, frontOk);
+		fprintf(stderr,
+			"redirect TEST FAILED (handshake=%d clientExit=%d targetExit=%d frontExit=%d)\n", ok,
+			clientOk, targetOk, frontOk);
 		return false;
 	}
 
@@ -446,8 +459,8 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 
 int main(int argc, char *argv[]) {
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s <rdp-server-mock path> <rdp-client-mock path> <logo image path>\n",
-			argv[0]);
+		fprintf(stderr,
+			"usage: %s <rdp-server-mock path> <rdp-client-mock path> <logo image path>\n", argv[0]);
 		return 1;
 	}
 	const char *serverPath = argv[1];

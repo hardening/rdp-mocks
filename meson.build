@@ -39,3 +39,18 @@ test('client-server-connect', test_client_server_connect_exe,
         meson.current_source_dir() / 'test' / 'freerdp-logo.png'],
     timeout: 30
 )
+
+clang_format = find_program('clang-format', required: false)
+if clang_format.found()
+    format_sources = files(
+        'commandChannel.cpp', 'commandChannel.h',
+        'outputChannel.cpp', 'outputChannel.h',
+        'mockOptions.cpp', 'mockOptions.h',
+        'rdp-client-mock.h', 'rdp-client-mock.cpp',
+        'rdp-server-mock.h', 'rdp-server-mock.cpp',
+        'test-client-server-connect.cpp',
+    )
+    run_target('format',
+        command: [clang_format, '-i'] + format_sources
+    )
+endif

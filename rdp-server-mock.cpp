@@ -114,8 +114,8 @@ static BOOL sendBitmapUpdate(freerdp_peer *peer, const std::string &path, UINT32
 	/* a single BITMAP_UPDATE fast path PDU can't exceed the client's advertised
 	 * MultifragMaxRequestSize, so tiles are sent in as few PDUs as fit rather than all at once
 	 * (which for any reasonably sized image easily overflows a single PDU) */
-	UINT32 maxRequestSize = freerdp_settings_get_uint32(peer->context->settings,
-		FreeRDP_MultifragMaxRequestSize);
+	UINT32 maxRequestSize =
+		freerdp_settings_get_uint32(peer->context->settings, FreeRDP_MultifragMaxRequestSize);
 	if (!maxRequestSize)
 		maxRequestSize = BITMAP_UPDATE_TILE_SIZE * BITMAP_UPDATE_TILE_SIZE * 4;
 	/* leave headroom for the PDU/order headers around each tile's raw pixel payload */
@@ -185,8 +185,7 @@ RdpServerMock::RdpServerMock(int fd, OutputChannel *output)
 , peer_(nullptr)
 , connectionEstablished_(false)
 , pollCmdChannelStartDate_(0)
-, lastReachedState_((CONNECTION_STATE)-1)
-{
+, lastReachedState_((CONNECTION_STATE)-1) {
 	settings_ = freerdp_settings_new(FREERDP_SETTINGS_SERVER_MODE);
 }
 
@@ -222,7 +221,7 @@ BOOL RdpServerMock::_client_postconnect(freerdp *instance) {
 }
 
 BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *client) {
-	RdpServerMock *mock = (RdpServerMock*)instance->info;
+	RdpServerMock *mock = (RdpServerMock *)instance->info;
 	if (!mock)
 		return FALSE;
 
@@ -231,7 +230,7 @@ BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *cli
 	if (!freerdp_peer_context_new(client))
 		return FALSE;
 
-	((RdpServerMockContext*)client->context)->mock_ = mock;
+	((RdpServerMockContext *)client->context)->mock_ = mock;
 
 	if (!freerdp_settings_copy(client->context->settings, mock->settings_)) {
 		freerdp_peer_context_free(client);
@@ -248,7 +247,7 @@ BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *cli
 		return FALSE;
 	}
 
-	rdpInput* input = client->context->input;
+	rdpInput *input = client->context->input;
 	input->KeyboardEvent = _peer_keyboard_event;
 	input->MouseEvent = _peer_mouse_event;
 
@@ -257,14 +256,14 @@ BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *cli
 }
 
 BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
-	RdpServerMockContext *context = (RdpServerMockContext*)client->context;
+	RdpServerMockContext *context = (RdpServerMockContext *)client->context;
 	RdpServerMock *mock = context->mock_;
 	mock->connectionEstablished_ = true;
 	return TRUE;
 }
 
 BOOL RdpServerMock::_peer_activate(freerdp_peer *client) {
-	RdpServerMockContext *context = (RdpServerMockContext*)client->context;
+	RdpServerMockContext *context = (RdpServerMockContext *)client->context;
 	RdpServerMock *mock = context->mock_;
 
 	if (!mock->pendingRedirectHost_.empty()) {
@@ -290,9 +289,8 @@ BOOL RdpServerMock::_peer_activate(freerdp_peer *client) {
 	return TRUE;
 }
 
-BOOL RdpServerMock::_peer_reached_state(freerdp_peer *client, CONNECTION_STATE state)
-{
-	RdpServerMockContext *context = (RdpServerMockContext*)client->context;
+BOOL RdpServerMock::_peer_reached_state(freerdp_peer *client, CONNECTION_STATE state) {
+	RdpServerMockContext *context = (RdpServerMockContext *)client->context;
 	RdpServerMock *mock = context->mock_;
 	if (mock->monitorStates_ && state != mock->lastReachedState_) {
 		mock->lastReachedState_ = state;
@@ -301,23 +299,22 @@ BOOL RdpServerMock::_peer_reached_state(freerdp_peer *client, CONNECTION_STATE s
 	return TRUE;
 }
 
-BOOL RdpServerMock::_peer_keyboard_event(rdpInput* input, UINT16 flags, UINT8 code)
-{
-	RdpServerMockContext *context = (RdpServerMockContext*)input->context;
+BOOL RdpServerMock::_peer_keyboard_event(rdpInput *input, UINT16 flags, UINT8 code) {
+	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
 	RdpServerMock *mock = context->mock_;
 	if (mock->monitorKeyEvents_)
-		mock->output_->sendNotification("key", "flags=" + std::to_string(flags) +
-				" code=" + std::to_string(code));
+		mock->output_->sendNotification(
+			"key", "flags=" + std::to_string(flags) + " code=" + std::to_string(code));
 	return TRUE;
 }
 
-BOOL RdpServerMock::_peer_mouse_event(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y)
-{
-	RdpServerMockContext *context = (RdpServerMockContext*)input->context;
+BOOL RdpServerMock::_peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y) {
+	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
 	RdpServerMock *mock = context->mock_;
 	if (mock->monitorMouseEvents_)
-		mock->output_->sendNotification("mouse", "x=" + std::to_string(x) + " y=" +
-				std::to_string(y) + " flags=" + std::to_string(flags));
+		mock->output_->sendNotification("mouse",
+			"x=" + std::to_string(x) + " y=" + std::to_string(y) +
+				" flags=" + std::to_string(flags));
 	return TRUE;
 }
 
@@ -333,7 +330,7 @@ int RdpServerMock::run() {
 		DWORD nhandles = 0;
 		UINT64 now = GetTickCount64();
 		bool pollCmd;
-		DWORD pollDelay= INFINITE;
+		DWORD pollDelay = INFINITE;
 
 		if (now > pollCmdChannelStartDate_) {
 			pollCmd = true;
@@ -344,7 +341,8 @@ int RdpServerMock::run() {
 		}
 
 		if (peer_)
-			nhandles += peer_->GetEventHandles(peer_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+			nhandles +=
+				peer_->GetEventHandles(peer_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
 
 		DWORD status = WAIT_TIMEOUT;
 		if (nhandles)
@@ -364,7 +362,7 @@ int RdpServerMock::run() {
 
 		if (pollCmd) {
 			if (WaitForSingleObject(hcmd, 0) == WAIT_OBJECT_0) {
-				switch(commandChannel_.pollFd()) {
+				switch (commandChannel_.pollFd()) {
 				case CommandChannel::POLL_SUCCESS:
 					break;
 				case CommandChannel::POLL_ERROR:
@@ -375,7 +373,7 @@ int RdpServerMock::run() {
 			}
 
 			if (commandChannel_.hasBufferData()) {
-				switch(commandChannel_.treat()) {
+				switch (commandChannel_.treat()) {
 				case CommandChannel::POLL_SUCCESS:
 					break;
 				case CommandChannel::POLL_ERROR:
@@ -407,13 +405,11 @@ int RdpServerMock::run() {
 
 ServerCommandChannel::ServerCommandChannel(int fd, RdpServerMock *mock)
 : CommandChannel(fd)
-, mock_(mock)
-{
-}
+, mock_(mock) {}
 
 
-CommandChannel::TreatResult ServerCommandChannel::onCommand(const std::string &cmd, const std::string &args) {
-
+CommandChannel::TreatResult ServerCommandChannel::onCommand(
+	const std::string &cmd, const std::string &args) {
 	struct StringSettingCommand {
 		const char *cmd;
 		FreeRDP_Settings_Keys_String settingId;
@@ -430,7 +426,8 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(const std::string &c
 		if (cmd == entry.cmd) {
 			if (entry.check && !entry.check(args))
 				return TREAT_ERROR;
-			return toTreatResult(freerdp_settings_set_string(settings, entry.settingId, args.c_str()));
+			return toTreatResult(
+				freerdp_settings_set_string(settings, entry.settingId, args.c_str()));
 		}
 	}
 
@@ -476,7 +473,8 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(const std::string &c
 		return toTreatResult(loadPrivateKeyFile(settings, args.c_str()));
 
 	} else if (cmd == "autoCert") {
-		char *makecertArgv[] = { (char*)"makecert", (char*)"-rdp", (char*)"-live", (char*)"-silent", (char*)"-y", (char*)"5" };
+		char *makecertArgv[] = { (char *)"makecert", (char *)"-rdp", (char *)"-live",
+			(char *)"-silent", (char *)"-y", (char *)"5" };
 
 		MAKECERT_CONTEXT *makecert = makecert_context_new();
 		if (!makecert)
@@ -493,7 +491,8 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(const std::string &c
 			return TREAT_ERROR;
 		}
 
-		return toTreatResult(loadCertificateFile(settings, (args + "/rdp-server-mock.crt").c_str()) &&
+		return toTreatResult(
+			loadCertificateFile(settings, (args + "/rdp-server-mock.crt").c_str()) &&
 			loadPrivateKeyFile(settings, (args + "/rdp-server-mock.key").c_str()));
 
 	} else if (cmd == "listen") {
@@ -634,8 +633,8 @@ int main(int argc, char *argv[]) {
 		WLog_SetLogLevel(WLog_GetRoot(), WLOG_OFF);
 
 	RdpServerMock mock(options.cmdFd,
-		options.jsonOutput ? new JsonOutputChannel(options.outFd) : new OutputChannel(options.outFd)
-	);
+		options.jsonOutput ? new JsonOutputChannel(options.outFd)
+						   : new OutputChannel(options.outFd));
 
 	return mock.run();
 }

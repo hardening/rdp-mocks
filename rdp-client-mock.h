@@ -48,6 +48,7 @@ struct RdpClientMockContext {
 /** @brief */
 class RdpClientMock {
 	friend class ClientCommandChannel;
+
 public:
 	RdpClientMock(int inFd, OutputChannel *output);
 	~RdpClientMock();

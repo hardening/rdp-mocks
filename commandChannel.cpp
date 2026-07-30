@@ -23,14 +23,12 @@
 
 CommandChannel::CommandChannel(int fd)
 : fd_(fd)
-, closed_(false)
-{
+, closed_(false) {
 	if (!ringbuffer_init(&buffer_, 30))
 		throw std::bad_alloc();
 }
 
-CommandChannel::~CommandChannel()
-{
+CommandChannel::~CommandChannel() {
 	ringbuffer_destroy(&buffer_);
 }
 
@@ -38,8 +36,7 @@ bool CommandChannel::hasBufferData() {
 	return ringbuffer_used(&buffer_) > 0;
 }
 
-CommandChannel::PollResult CommandChannel::pollFd()
-{
+CommandChannel::PollResult CommandChannel::pollFd() {
 	BYTE *ptr = ringbuffer_ensure_linear_write(&buffer_, 1000);
 	int ret = read(fd_, ptr, 1000);
 	if (!ret) {
@@ -57,7 +54,7 @@ CommandChannel::PollResult CommandChannel::treat() {
 	while (ringbuffer_used(&buffer_)) {
 		size_t avail = ringbuffer_used(&buffer_);
 
-		#define MAX_LINE_BUFFER 1000
+#define MAX_LINE_BUFFER 1000
 		char lineBuffer[MAX_LINE_BUFFER + 1];
 		DataChunk chunks[2];
 		int nchunks = ringbuffer_peek(&buffer_, chunks, avail);
@@ -78,7 +75,8 @@ CommandChannel::PollResult CommandChannel::treat() {
 		size_t toCommit;
 		if (!eol) {
 			if (avail > MAX_LINE_BUFFER) {
-				WLog_ERR(TAG, "provided command doesn't feet on a buffer line (max supported=%d)", MAX_LINE_BUFFER);
+				WLog_ERR(TAG, "provided command doesn't feet on a buffer line (max supported=%d)",
+					MAX_LINE_BUFFER);
 				return POLL_ERROR;
 			}
 			if (!closed_)
@@ -106,7 +104,7 @@ CommandChannel::PollResult CommandChannel::treat() {
 		ringbuffer_commit_read_bytes(&buffer_, toCommit);
 
 		if (eol != lineBuffer && lineBuffer[0] != '#') {
-			switch(onCommand(lineBuffer, startOfArgs)) {
+			switch (onCommand(lineBuffer, startOfArgs)) {
 			case TREAT_ERROR:
 				return POLL_ERROR;
 			case TREAT_SKIP:
@@ -120,7 +118,6 @@ CommandChannel::PollResult CommandChannel::treat() {
 }
 
 
-CommandChannel::TreatResult CommandChannel::toTreatResult(bool v)
-{
+CommandChannel::TreatResult CommandChannel::toTreatResult(bool v) {
 	return v ? CommandChannel::TREAT_SUCCESS : CommandChannel::TREAT_ERROR;
 }

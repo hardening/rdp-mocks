@@ -1,0 +1,68 @@
+---
+# clang-format style reverse-engineered from the existing rdpmocks code style.
+# Run `clang-format -i <files>` to apply.
+Language: Cpp
+Standard: c++17
+
+BasedOnStyle: LLVM
+
+# Indentation: tabs, one level per tab
+UseTab: Always
+TabWidth: 4
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+IndentCaseLabels: false
+IndentPPDirectives: None
+NamespaceIndentation: None
+
+# Braces attached to the same line everywhere (functions, control
+# statements, classes, enums, structs, namespaces, ...)
+BreakBeforeBraces: Attach
+
+# Pointers/references bind to the variable name: "Type *name", "Type &name"
+PointerAlignment: Right
+ReferenceAlignment: Right
+DerivePointerAlignment: false
+
+# Never collapse control-statement bodies or multi-statement blocks onto
+# one line; only truly empty bodies may stay on one line.
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+
+# Constructor initializer lists: leading comma, flush left, one per line
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+ConstructorInitializerIndentWidth: 0
+
+# Binary operators stay at the end of the line when a condition wraps,
+# continuation lines just get one extra indent (no vertical alignment)
+BreakBeforeBinaryOperators: None
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignTrailingComments: false
+
+# Braced init lists get padding spaces: { "user", FreeRDP_Username }
+Cpp11BracedListStyle: false
+
+# Includes are hand-grouped (system / winpr / freerdp / local) and not
+# alphabetized within a group; don't fight that.
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# Don't rewrap existing comments (license headers, etc.)
+ReflowComments: false
+FixNamespaceComments: true
+
+ColumnLimit: 100
+MaxEmptyLinesToKeep: 2
+KeepEmptyLinesAtTheStartOfBlocks: false
+SpacesInParentheses: false
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: false

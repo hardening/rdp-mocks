@@ -31,13 +31,9 @@ MockOptions::MockOptions()
 : cmdFd(fileno(stdin))
 , outFd(fileno(stdout))
 , debugMode(false)
-, jsonOutput(false)
-{
+, jsonOutput(false) {}
 
-}
-
-int MockOptions::parseArgs(int argc, char *argv[])
-{
+int MockOptions::parseArgs(int argc, char *argv[]) {
 	for (int i = 1; i < argc; i++) {
 		std::string arg = argv[i];
 		const std::string inputPrefix = "--input=";
