@@ -536,7 +536,7 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 				break;
 
 			if (!listener->CheckFileDescriptor(listener)) {
-				mock_->output_->sendResult(false);
+				mock_->output_->sendResult(false, "error accepting peer");
 				WLog_ERR(TAG, "listener CheckFileDescriptor failed");
 				break;
 			}

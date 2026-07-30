@@ -28,7 +28,7 @@ class RdpServerMock;
 #include <freerdp/peer.h>
 #include <freerdp/listener.h>
 
-/** @brief */
+/** @brief command channel implementation for rdp-server-mock */
 class ServerCommandChannel : public CommandChannel {
 public:
 	ServerCommandChannel(int fd, RdpServerMock *mock);
@@ -46,7 +46,7 @@ struct RdpServerMockContext {
 	RdpServerMock *mock_;
 };
 
-/** @brief */
+/** @brief rdp-server-mock implementation */
 class RdpServerMock {
 	friend class ServerCommandChannel;
 
