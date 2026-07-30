@@ -34,7 +34,7 @@ public:
 	ServerCommandChannel(int fd, RdpServerMock *mock);
 	virtual ~ServerCommandChannel() = default;
 
-	BOOL onCommand(const std::string &cmd, const std::string &args) override;
+	CommandChannel::TreatResult onCommand(const std::string &cmd, const std::string &args) override;
 
 protected:
 	RdpServerMock *mock_;
@@ -80,4 +80,5 @@ protected:
 	bool connectionEstablished_;
 	UINT64 pollCmdChannelStartDate_;
 	CONNECTION_STATE lastReachedState_;
+	std::string pendingRedirectHost_;
 };

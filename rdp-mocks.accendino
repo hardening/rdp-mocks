@@ -1,7 +1,7 @@
 include('freerdp')
 
 rdpmocks_pkgs = {
-    UBUNTU_LIKE: ['libjsoncpp-dev']
+    UBUNTU_LIKE: ['libjsoncpp-dev', 'libmagick++-dev']
 }
 ARTIFACTS.append(
     MesonBuildArtifact('rdp-mocks', ['freerdp3-artifact'],

@@ -7,6 +7,7 @@ freerdp_deps = dependency('freerdp3')
 freerdp_client_deps = dependency('freerdp-client3')
 freerdp_server_deps = dependency('freerdp-server3')
 jsoncpp_deps = dependency('jsoncpp')
+magick_deps = dependency('Magick++')
 
 common_lib = library('mock-common',
     'commandChannel.cpp', 'commandChannel.h',
@@ -29,11 +30,12 @@ rdp_client_mock_exe = executable('rdp-client-mock', 'rdp-client-mock.h', 'rdp-cl
 
 rdp_server_mock_exe = executable('rdp-server-mock', 'rdp-server-mock.h', 'rdp-server-mock.cpp',
     link_with: common_lib,
-    dependencies: [winpr_deps, winpr_tools_deps, freerdp_deps, freerdp_server_deps, jsoncpp_deps]
+    dependencies: [winpr_deps, winpr_tools_deps, freerdp_deps, freerdp_server_deps, jsoncpp_deps, magick_deps]
 )
 
 test_client_server_connect_exe = executable('test-client-server-connect', 'test-client-server-connect.cpp')
 test('client-server-connect', test_client_server_connect_exe,
-    args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path()],
+    args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path(),
+        meson.current_source_dir() / 'test' / 'freerdp-logo.png'],
     timeout: 30
 )
