@@ -36,11 +36,11 @@ RdpClientMock::RdpClientMock(int fd, OutputChannel *output)
 , output_(output)
 , monitorStates_(false)
 , monitorConnectionState_(false)
+, monitorGraphicsUpdates_(true)
 , doRun_(true)
 , commandChannel_(fd, this)
 , connectionEstablished_(false)
-, pollCmdChannelStartDate_(0)
-{
+, pollCmdChannelStartDate_(0) {
 	RDP_CLIENT_ENTRY_POINTS entryPoints;
 	ZeroMemory(&entryPoints, sizeof(entryPoints));
 	entryPoints.Version = RDP_CLIENT_INTERFACE_VERSION;
@@ -51,7 +51,7 @@ RdpClientMock::RdpClientMock(int fd, OutputChannel *output)
 	entryPoints.ClientStart = _client_start;
 	entryPoints.ClientStop = _client_stop;
 
-	rdpClient_ = (RdpClientMockContext*)freerdp_client_context_new(&entryPoints);
+	rdpClient_ = (RdpClientMockContext *)freerdp_client_context_new(&entryPoints);
 	if (!rdpClient_)
 		throw std::bad_alloc();
 	rdpClient_->mock_ = this;
@@ -73,20 +73,17 @@ BOOL RdpClientMock::_client_new(freerdp *instance, rdpContext *context) {
 
 	instance->PreConnect = _client_preconnect;
 	instance->PostConnect = _client_postconnect;
+	instance->Redirect = _client_redirect;
 	return TRUE;
 }
 
-void RdpClientMock::_client_free(freerdp *instance, rdpContext *context)
-{
-}
+void RdpClientMock::_client_free(freerdp *instance, rdpContext *context) {}
 
-int RdpClientMock::_client_start(rdpContext *context)
-{
+int RdpClientMock::_client_start(rdpContext *context) {
 	return 0;
 }
 
-int RdpClientMock::_client_stop(rdpContext *context)
-{
+int RdpClientMock::_client_stop(rdpContext *context) {
 	return 0;
 }
 #ifdef HAVE_CLIENT_MONITOR_STATES
@@ -100,14 +97,15 @@ void RdpClientMock::_on_state_changed(void *context, const StateChangedEventArgs
 		mock->output_->sendNotification("states", freerdp_state_string(e->newState));
 }
 
-void RdpClientMock::_on_connection_state_change(void *context, const ConnectionStateChangeEventArgs *e) {
+void RdpClientMock::_on_connection_state_change(
+	void *context, const ConnectionStateChangeEventArgs *e) {
 	/*WLog_INFO(TAG, "ConnectionStateChange: state=%d active=%d", e->state, e->active);*/
 
 	RdpClientMockContext *mcontext = (RdpClientMockContext *)context;
 	RdpClientMock *mock = mcontext->mock_;
 	if (mock->monitorConnectionState_)
-		mock->output_->sendNotification("connectionState", "state=" + std::to_string(e->state) +
-				" active=" + std::to_string(e->active));
+		mock->output_->sendNotification("connectionState",
+			"state=" + std::to_string(e->state) + " active=" + std::to_string(e->active));
 }
 #endif
 
@@ -126,6 +124,9 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 #endif
 	PubSub_SubscribeConnectionResult(pubSub, _on_connection_result);
 
+	instance->context->update->BitmapUpdate = _client_bitmap_update;
+	instance->context->update->SurfaceBits = _client_surface_bits;
+
 	/* this is a mock client for testing, not a real client acting on behalf of a user: never
 	 * block on an interactive certificate trust decision, servers are expected to be test/mock
 	 * instances with self-signed certificates */
@@ -140,10 +141,53 @@ BOOL RdpClientMock::_client_postconnect(freerdp *instance) {
 	if (!instance || !instance->context)
 		return FALSE;
 
-	RdpClientMockContext *context = (RdpClientMockContext*)instance->context;
+	RdpClientMockContext *context = (RdpClientMockContext *)instance->context;
 	context->mock_->connectionEstablished_ = true;
 
 	//WLog_INFO(TAG, "postconnect");
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_redirect(freerdp *instance) {
+	if (!instance || !instance->context)
+		return FALSE;
+
+	RdpClientMockContext *context = (RdpClientMockContext *)instance->context;
+	RdpClientMock *mock = context->mock_;
+
+	const char *host =
+		freerdp_settings_get_string(instance->context->settings, FreeRDP_ServerHostname);
+	mock->output_->sendNotification("redirect", host ? host : "");
+
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_bitmap_update(rdpContext *context, const BITMAP_UPDATE *bitmap) {
+	RdpClientMockContext *mcontext = (RdpClientMockContext *)context;
+	RdpClientMock *mock = mcontext->mock_;
+
+	if (mock->monitorGraphicsUpdates_) {
+		for (UINT32 i = 0; i < bitmap->number; i++) {
+			const BITMAP_DATA &rect = bitmap->rectangles[i];
+			mock->output_->sendNotification("graphics",
+				"left=" + std::to_string(rect.destLeft) + " top=" + std::to_string(rect.destTop) +
+					" right=" + std::to_string(rect.destRight) +
+					" bottom=" + std::to_string(rect.destBottom));
+		}
+	}
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_surface_bits(rdpContext *context, const SURFACE_BITS_COMMAND *cmd) {
+	RdpClientMockContext *mcontext = (RdpClientMockContext *)context;
+	RdpClientMock *mock = mcontext->mock_;
+
+	if (mock->monitorGraphicsUpdates_) {
+		mock->output_->sendNotification("graphics",
+			"left=" + std::to_string(cmd->destLeft) + " top=" + std::to_string(cmd->destTop) +
+				" right=" + std::to_string(cmd->destRight) +
+				" bottom=" + std::to_string(cmd->destBottom));
+	}
 	return TRUE;
 }
 
@@ -163,7 +207,6 @@ BOOL RdpClientMock::connectClient() {
 	output_->sendResult(true);
 	return TRUE;
 }
-
 
 
 int RdpClientMock::run() {
@@ -189,7 +232,8 @@ int RdpClientMock::run() {
 			pollDelay = (1 + pollCmdChannelStartDate_ - now);
 		}
 
-		DWORD nrdpHandles = freerdp_get_event_handles(&rdpClient_->context_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+		DWORD nrdpHandles = freerdp_get_event_handles(
+			&rdpClient_->context_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
 		if (nrdpHandles)
 			nhandles += nrdpHandles;
 		DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, pollDelay);
@@ -206,12 +250,23 @@ int RdpClientMock::run() {
 
 		if (pollCmd) {
 			if (WaitForSingleObject(hcmd, 0) == WAIT_OBJECT_0) {
-				switch(commandChannel_.poll()) {
+				switch (commandChannel_.pollFd()) {
 				case CommandChannel::POLL_SUCCESS:
 					break;
 				case CommandChannel::POLL_ERROR:
 				case CommandChannel::POLL_CLOSED:
 					doRun_ = false;
+				}
+			}
+
+			if (commandChannel_.hasBufferData()) {
+				switch (commandChannel_.treat()) {
+				case CommandChannel::POLL_SUCCESS:
+					break;
+				case CommandChannel::POLL_ERROR:
+				case CommandChannel::POLL_CLOSED:
+					doRun_ = FALSE;
+					break;
 				}
 			}
 		}
@@ -231,12 +286,10 @@ int RdpClientMock::run() {
 
 ClientCommandChannel::ClientCommandChannel(int fd, RdpClientMock *mock)
 : CommandChannel(fd)
-, mock_(mock)
-{
-}
+, mock_(mock) {}
 
-BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &args) {
-
+CommandChannel::TreatResult ClientCommandChannel::onCommand(
+	const std::string &cmd, const std::string &args) {
 	struct StringSettingCommand {
 		const char *cmd;
 		FreeRDP_Settings_Keys_String settingId;
@@ -253,7 +306,8 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 
 	for (const auto &entry : stringSettingCommands) {
 		if (cmd == entry.cmd)
-			return freerdp_settings_set_string(settings, entry.settingId, args.c_str());
+			return toTreatResult(
+				freerdp_settings_set_string(settings, entry.settingId, args.c_str()));
 	}
 
 	if (cmd == "authType") {
@@ -266,36 +320,36 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 			secId = FreeRDP_TlsSecurity;
 		else {
 			WLog_ERR(TAG, "unknown authType: %s", args.c_str());
-			return TRUE;
+			return TREAT_ERROR;
 		}
 
 		if (!freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE) ||
 			!freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE) ||
 			!freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, FALSE) ||
 			!freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, FALSE))
-			return FALSE;
+			return TREAT_ERROR;
 
 		if (!freerdp_settings_set_bool(settings, secId, TRUE))
-			return FALSE;
-		return (secId != FreeRDP_RdpSecurity) ||
-			freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, TRUE);
+			return TREAT_ERROR;
+		return toTreatResult((secId != FreeRDP_RdpSecurity) ||
+			freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, TRUE));
 
 	} else if (cmd == "adminMode") {
 		if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, TRUE))
-			return FALSE;
+			return TREAT_ERROR;
 
 	} else if (cmd == "geometry") {
 		size_t xPos = args.find('x');
 		if (xPos == std::string::npos)
-			return FALSE;
+			return TREAT_ERROR;
 		std::string widthStr = args.substr(0, xPos);
 		std::string heightStr = args.substr(xPos + 1);
 
 		UINT32 width = (UINT32)strtoul(widthStr.c_str(), nullptr, 10);
 		UINT32 height = (UINT32)strtoul(heightStr.c_str(), nullptr, 10);
 
-		return freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, width) &&
-				freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, height);
+		return toTreatResult(freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, width) &&
+			freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, height));
 
 	} else if (cmd == "connect") {
 		size_t colonPos = args.rfind(':');
@@ -305,9 +359,9 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 			port = (UINT32)strtoul(args.c_str() + colonPos + 1, nullptr, 10);
 
 		if (!freerdp_settings_set_string(settings, FreeRDP_ServerHostname, host.c_str()))
-			return FALSE;
+			return TREAT_ERROR;
 		if (!freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, port))
-			return FALSE;
+			return TREAT_ERROR;
 
 		mock_->connectClient();
 
@@ -315,13 +369,14 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 		UINT32 delay = (UINT32)strtoul(args.c_str(), nullptr, 10);
 		if (delay && delay < 100 * 1000)
 			mock_->pollCmdChannelStartDate_ = GetTickCount64() + delay;
+		return TREAT_SKIP;
 
 	} else if (cmd == "mouse") {
 		if (!mock_->connectionEstablished_)
-			return FALSE;
+			return TREAT_ERROR;
 		size_t spacePos = args.rfind(' ');
 		if (spacePos == std::string::npos)
-			return FALSE;
+			return TREAT_ERROR;
 		std::string xStr = args.substr(0, spacePos);
 		std::string yStr = args.substr(spacePos + 1);
 
@@ -329,7 +384,7 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 		UINT32 y = strtoul(yStr.c_str(), nullptr, 10);
 
 		if (!freerdp_input_send_mouse_event(mock_->rdpClient_->context_.input, 0, x, y))
-			return FALSE;
+			return TREAT_ERROR;
 	} else if (cmd == "quit") {
 		mock_->doRun_ = false;
 		mock_->output_->sendResult(true);
@@ -339,24 +394,27 @@ BOOL ClientCommandChannel::onCommand(const std::string &cmd, const std::string &
 			mock_->monitorStates_ = true;
 #else
 			WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
-			return FALSE;
+			return TREAT_ERROR;
 #endif
 		} else if (args == "connectionState") {
 #ifdef HAVE_CLIENT_MONITOR_STATES
 			mock_->monitorConnectionState_ = true;
 #else
 			WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
-			return FALSE;
+			return TREAT_ERROR;
 #endif
+		} else if (args == "graphics") {
+			mock_->monitorGraphicsUpdates_ = true;
 		} else if (args == "off") {
 			mock_->monitorStates_ = false;
 			mock_->monitorConnectionState_ = false;
+			mock_->monitorGraphicsUpdates_ = false;
 		} else {
 			WLog_ERR(TAG, "unknown monitor kind");
-			return FALSE;
+			return TREAT_ERROR;
 		}
 	}
-	return TRUE;
+	return TREAT_SUCCESS;
 }
 
 int main(int argc, char *argv[]) {
@@ -370,8 +428,8 @@ int main(int argc, char *argv[]) {
 		WLog_SetLogLevel(WLog_GetRoot(), WLOG_OFF);
 
 	RdpClientMock mock(options.cmdFd,
-		options.jsonOutput ? new JsonOutputChannel(options.outFd) : new OutputChannel(options.outFd)
-	);
+		options.jsonOutput ? new JsonOutputChannel(options.outFd)
+						   : new OutputChannel(options.outFd));
 
 	return mock.run();
 }

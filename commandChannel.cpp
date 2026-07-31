@@ -23,33 +23,38 @@
 
 CommandChannel::CommandChannel(int fd)
 : fd_(fd)
-{
+, closed_(false) {
 	if (!ringbuffer_init(&buffer_, 30))
 		throw std::bad_alloc();
 }
 
-CommandChannel::~CommandChannel()
-{
+CommandChannel::~CommandChannel() {
 	ringbuffer_destroy(&buffer_);
 }
 
-CommandChannel::PollResult CommandChannel::poll()
-{
+bool CommandChannel::hasBufferData() {
+	return ringbuffer_used(&buffer_) > 0;
+}
+
+CommandChannel::PollResult CommandChannel::pollFd() {
 	BYTE *ptr = ringbuffer_ensure_linear_write(&buffer_, 1000);
-	BOOL closed = FALSE;
 	int ret = read(fd_, ptr, 1000);
 	if (!ret) {
-		closed = TRUE;
+		closed_ = true;
 	} else if (ret < 0)
 		return POLL_ERROR;
 
 	if (ret && !ringbuffer_commit_written_bytes(&buffer_, ret))
 		return POLL_ERROR;
 
+	return (closed_ && ringbuffer_used(&buffer_) == 0) ? POLL_CLOSED : POLL_SUCCESS;
+}
+
+CommandChannel::PollResult CommandChannel::treat() {
 	while (ringbuffer_used(&buffer_)) {
 		size_t avail = ringbuffer_used(&buffer_);
 
-		#define MAX_LINE_BUFFER 1000
+#define MAX_LINE_BUFFER 1000
 		char lineBuffer[MAX_LINE_BUFFER + 1];
 		DataChunk chunks[2];
 		int nchunks = ringbuffer_peek(&buffer_, chunks, avail);
@@ -67,16 +72,25 @@ CommandChannel::PollResult CommandChannel::poll()
 		size_t nchars = (size_t)(writePtr - lineBuffer);
 		lineBuffer[nchars] = 0;
 		char *eol = strchr(lineBuffer, '\n');
+		size_t toCommit;
 		if (!eol) {
 			if (avail > MAX_LINE_BUFFER) {
-				WLog_ERR(TAG, "provided command doesn't feet on a buffer line (max supported=%d)", MAX_LINE_BUFFER);
+				WLog_ERR(TAG, "provided command doesn't feet on a buffer line (max supported=%d)",
+					MAX_LINE_BUFFER);
 				return POLL_ERROR;
 			}
-			if (!closed)
+			if (!closed_)
 				return POLL_SUCCESS;
 
 			eol = lineBuffer + strlen(lineBuffer);
+			toCommit = (eol - lineBuffer);
+		} else {
+			toCommit = 1 + (eol - lineBuffer);
 		}
+
+		if (!toCommit)
+			return POLL_CLOSED;
+
 		*eol = 0;
 		char *startOfArgs = lineBuffer;
 		while (startOfArgs < eol && *startOfArgs != ' ')
@@ -87,16 +101,23 @@ CommandChannel::PollResult CommandChannel::poll()
 			startOfArgs++;
 		}
 
-		size_t toCommit = (eol - lineBuffer);
-		if (!closed)
-			toCommit++;
 		ringbuffer_commit_read_bytes(&buffer_, toCommit);
 
 		if (eol != lineBuffer && lineBuffer[0] != '#') {
-			if (!onCommand(lineBuffer, startOfArgs))
+			switch (onCommand(lineBuffer, startOfArgs)) {
+			case TREAT_ERROR:
 				return POLL_ERROR;
+			case TREAT_SKIP:
+				return POLL_SUCCESS;
+			default:
+				break;
+			}
 		}
 	}
-	return closed ? POLL_CLOSED : POLL_SUCCESS;
+	return POLL_SUCCESS;
+}
 
+
+CommandChannel::TreatResult CommandChannel::toTreatResult(bool v) {
+	return v ? CommandChannel::TREAT_SUCCESS : CommandChannel::TREAT_ERROR;
 }

@@ -1,5 +1,5 @@
 /**
- * rdpmocks: end-to-end test driving rdp-client-mock and rdp-server-mock
+ * rdpmocks: end-to-end test driving a basic rdp-client-mock to rdp-server-mock connection
  *
  * Copyright 2026 David Fort <contact@hardening-consulting.com>
  *
@@ -17,125 +17,20 @@
  */
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
 
-#include <poll.h>
-#include <sys/wait.h>
 #include <unistd.h>
+
+#include "testUtils.h"
 
 namespace {
 
-struct MockProcess {
-	pid_t pid = -1;
-	int cmdWriteFd = -1;
-	int outReadFd = -1;
-};
-
-bool spawnMock(const char *path, MockProcess &proc) {
-	int cmdPipe[2];
-	int outPipe[2];
-	if (pipe(cmdPipe) < 0 || pipe(outPipe) < 0) {
-		perror("pipe");
-		return false;
-	}
-
-	pid_t pid = fork();
-	if (pid < 0) {
-		perror("fork");
-		return false;
-	}
-
-	if (pid == 0) {
-		close(cmdPipe[1]);
-		close(outPipe[0]);
-
-		char inputArg[32];
-		char outputArg[32];
-		snprintf(inputArg, sizeof(inputArg), "--inputFd=%d", cmdPipe[0]);
-		snprintf(outputArg, sizeof(outputArg), "--outputFd=%d", outPipe[1]);
-
-		execl(path, path, inputArg, outputArg, (char*)nullptr);
-		perror("execl");
-		_exit(127);
-	}
-
-	close(cmdPipe[0]);
-	close(outPipe[1]);
-
-	proc.pid = pid;
-	proc.cmdWriteFd = cmdPipe[1];
-	proc.outReadFd = outPipe[0];
-	return true;
-}
-
-bool sendCommand(MockProcess &proc, const std::string &line) {
-	std::string full = line + "\n";
-	return write(proc.cmdWriteFd, full.c_str(), full.size()) == (ssize_t)full.size();
-}
-
-/* reads a single '\n'-terminated line, false on timeout/EOF/error */
-bool readLine(MockProcess &proc, std::string &line, int timeoutMs) {
-	line.clear();
-	for (;;) {
-		struct pollfd pfd;
-		pfd.fd = proc.outReadFd;
-		pfd.events = POLLIN;
-		pfd.revents = 0;
-
-		int rc = poll(&pfd, 1, timeoutMs);
-		if (rc <= 0)
-			return false;
-
-		char c = 0;
-		ssize_t n = read(proc.outReadFd, &c, 1);
-		if (n <= 0)
-			return false;
-		if (c == '\n')
-			return true;
-		line += c;
-	}
-}
-
-void closeMock(MockProcess &proc) {
-	if (proc.cmdWriteFd >= 0)
-		close(proc.cmdWriteFd);
-	if (proc.outReadFd >= 0)
-		close(proc.outReadFd);
-}
-
-bool waitMock(MockProcess &proc) {
-	int status = 0;
-	if (waitpid(proc.pid, &status, 0) < 0)
-		return false;
-	if (WIFSIGNALED(status)) {
-		fprintf(stderr, "pid %d killed by signal %d\n", (int)proc.pid, WTERMSIG(status));
-		return false;
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-		fprintf(stderr, "pid %d exited with status %d\n", (int)proc.pid, WEXITSTATUS(status));
-		return false;
-	}
-	return true;
-}
-
-} // namespace
-
-int main(int argc, char *argv[]) {
-	if (argc < 3) {
-		fprintf(stderr, "usage: %s <rdp-server-mock path> <rdp-client-mock path>\n", argv[0]);
-		return 1;
-	}
-	const char *serverPath = argv[1];
-	const char *clientPath = argv[2];
-
+bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	char certDirTemplate[] = "/tmp/rdpmocks-test-XXXXXX";
-	char *certDir = mkdtemp(certDirTemplate);
-	if (!certDir) {
-		perror("mkdtemp");
-		return 1;
-	}
+	char *certDir = mkCertDir(certDirTemplate);
+	if (!certDir)
+		return false;
 
 	/* spread out the port a bit to reduce the chance of clashing with a concurrent test run */
 	int port = 30000 + (int)(getpid() % 10000);
@@ -153,8 +48,16 @@ int main(int argc, char *argv[]) {
 	ok = ok && sendCommand(server, "monitor states");
 	ok = ok && sendCommand(server, "listen 127.0.0.1:" + std::to_string(port));
 
-	/* give the server a brief moment to actually bind and start listening */
-	usleep(300 * 1000);
+	std::string line;
+	/* wait for the server to actually confirm it's bound and listening rather than guessing a
+	 * fixed delay -- autoCert's RSA keygen can take a while under CPU contention (e.g. on a
+	 * loaded CI runner), and a fixed sleep that's fine locally can be too short there, making
+	 * the client's connect race the server's listen() and fail with ECONNREFUSED */
+	if (ok) {
+		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:listen";
+		if (!ok)
+			fprintf(stderr, "server did not confirm it is listening (got '%s')\n", line.c_str());
+	}
 
 	/* the client mock ignores certificate trust (see _client_preconnect) but still needs
 	 * credentials set, or it blocks trying to prompt for them interactively on stdin */
@@ -163,19 +66,18 @@ int main(int argc, char *argv[]) {
 	ok = ok && sendCommand(client, "password testpass");
 	ok = ok && sendCommand(client, "connect 127.0.0.1:" + std::to_string(port));
 
-	std::string line;
 	if (ok) {
 		ok = readLine(client, line, 5000) && line == "RESULT:SUCCESS";
 		if (!ok)
-			fprintf(stderr, "client did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "client did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	if (ok) {
-		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:listen";
-		if (ok)
-			ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:accepted";
+		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:accepted";
 		if (!ok)
-			fprintf(stderr, "server did not report a successful connection (got '%s')\n", line.c_str());
+			fprintf(
+				stderr, "server did not report a successful connection (got '%s')\n", line.c_str());
 	}
 
 	/* the handshake drives the peer's ReachedState callback through several CONNECTION_STATE
@@ -184,8 +86,8 @@ int main(int argc, char *argv[]) {
 	if (ok) {
 		int stateNotifications = 0;
 		const char *statesPrefix = "NOTIFICATION:states:";
-		while (readLine(server, line, 500) &&
-				line.compare(0, strlen(statesPrefix), statesPrefix) == 0)
+		while (
+			readLine(server, line, 500) && line.compare(0, strlen(statesPrefix), statesPrefix) == 0)
 			stateNotifications++;
 		ok = stateNotifications > 0;
 		if (!ok)
@@ -204,6 +106,17 @@ int main(int argc, char *argv[]) {
 			fprintf(stderr, "server did not report the mouse move (got '%s')\n", line.c_str());
 	}
 
+	/* the server's "debug <msg>" command should unconditionally emit a
+	 * NOTIFICATION:debug:<msg> line, regardless of any "monitor" setting */
+	if (ok) {
+		ok = sendCommand(server, "debug hello from test") && readLine(server, line, 5000);
+		if (ok)
+			ok = line == "NOTIFICATION:debug:hello from test";
+		if (!ok)
+			fprintf(
+				stderr, "server did not report the debug notification (got '%s')\n", line.c_str());
+	}
+
 	sendCommand(client, "quit");
 	sendCommand(server, "quit");
 
@@ -218,12 +131,29 @@ int main(int argc, char *argv[]) {
 	closeMock(client);
 	closeMock(server);
 
-	unlink((std::string(certDir) + "/rdp-server-mock.crt").c_str());
-	unlink((std::string(certDir) + "/rdp-server-mock.key").c_str());
-	rmdir(certDir);
+	rmCertDir(certDir);
 
 	if (!ok || !clientOk || !serverOk) {
-		fprintf(stderr, "TEST FAILED (handshake=%d clientExit=%d serverExit=%d)\n", ok, clientOk, serverOk);
+		fprintf(stderr, "basic connect TEST FAILED (handshake=%d clientExit=%d serverExit=%d)\n",
+			ok, clientOk, serverOk);
+		return false;
+	}
+
+	return true;
+}
+
+} // namespace
+
+int main(int argc, char *argv[]) {
+	if (argc < 3) {
+		fprintf(stderr, "usage: %s <rdp-server-mock path> <rdp-client-mock path>\n", argv[0]);
+		return 1;
+	}
+	const char *serverPath = argv[1];
+	const char *clientPath = argv[2];
+
+	if (!testBasicConnect(serverPath, clientPath)) {
+		fprintf(stderr, "TEST FAILED\n");
 		return 1;
 	}
 

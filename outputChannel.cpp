@@ -23,17 +23,13 @@
 #include "outputChannel.h"
 
 OutputChannel::OutputChannel(int outFd)
-: outFd_(outFd)
-{
-}
+: outFd_(outFd) {}
 
-OutputChannel::~OutputChannel()
-{
+OutputChannel::~OutputChannel() {
 	close(outFd_);
 }
 
-bool OutputChannel::sendResult(bool success, const std::string &extra)
-{
+bool OutputChannel::sendResult(bool success, const std::string &extra) {
 	const char *status = success ? "SUCCESS" : "FAILURE";
 	if (write(outFd_, "RESULT:", strlen("RESULT:")) <= 0 ||
 		write(outFd_, status, strlen(status)) <= 0)
@@ -46,30 +42,23 @@ bool OutputChannel::sendResult(bool success, const std::string &extra)
 	return write(outFd_, "\n", 1) > 0;
 }
 
-bool OutputChannel::sendNotification(const std::string &category, const std::string &msg)
-{
+bool OutputChannel::sendNotification(const std::string &category, const std::string &msg) {
 	return write(outFd_, "NOTIFICATION:", strlen("NOTIFICATION:")) > 0 &&
-		write(outFd_, category.c_str(), category.size()) > 0 &&
-		write(outFd_, ":", 1) > 0 &&
-		write(outFd_, msg.c_str(), msg.size()) > 0 &&
-		write(outFd_, "\n", 1) > 0;
+		write(outFd_, category.c_str(), category.size()) > 0 && write(outFd_, ":", 1) > 0 &&
+		write(outFd_, msg.c_str(), msg.size()) > 0 && write(outFd_, "\n", 1) > 0;
 }
 
 JsonOutputChannel::JsonOutputChannel(int outFd)
-: OutputChannel(outFd)
-{
-}
+: OutputChannel(outFd) {}
 
-bool JsonOutputChannel::sendLine(const Json::Value &root)
-{
+bool JsonOutputChannel::sendLine(const Json::Value &root) {
 	Json::StreamWriterBuilder builder;
 	builder["indentation"] = "";
 	std::string line = Json::writeString(builder, root) + "\n";
 	return write(outFd_, line.c_str(), line.size()) == (ssize_t)line.size();
 }
 
-bool JsonOutputChannel::sendResult(bool success, const std::string &extra)
-{
+bool JsonOutputChannel::sendResult(bool success, const std::string &extra) {
 	Json::Value root;
 	root["type"] = "result";
 	root["success"] = success;
@@ -78,8 +67,7 @@ bool JsonOutputChannel::sendResult(bool success, const std::string &extra)
 	return sendLine(root);
 }
 
-bool JsonOutputChannel::sendNotification(const std::string &category, const std::string &msg)
-{
+bool JsonOutputChannel::sendNotification(const std::string &category, const std::string &msg) {
 	Json::Value root;
 	root["type"] = "notification";
 	root["category"] = category;

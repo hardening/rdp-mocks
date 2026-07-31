@@ -32,7 +32,7 @@ public:
 	ClientCommandChannel(int fd, RdpClientMock *mock);
 	virtual ~ClientCommandChannel() = default;
 
-	BOOL onCommand(const std::string &cmd, const std::string &args) override;
+	CommandChannel::TreatResult onCommand(const std::string &cmd, const std::string &args) override;
 
 protected:
 	RdpClientMock *mock_;
@@ -48,6 +48,7 @@ struct RdpClientMockContext {
 /** @brief */
 class RdpClientMock {
 	friend class ClientCommandChannel;
+
 public:
 	RdpClientMock(int inFd, OutputChannel *output);
 	~RdpClientMock();
@@ -62,6 +63,9 @@ protected:
 	static int _client_stop(rdpContext *context);
 	static BOOL _client_preconnect(freerdp *instance);
 	static BOOL _client_postconnect(freerdp *instance);
+	static BOOL _client_redirect(freerdp *instance);
+	static BOOL _client_bitmap_update(rdpContext *context, const BITMAP_UPDATE *bitmap);
+	static BOOL _client_surface_bits(rdpContext *context, const SURFACE_BITS_COMMAND *cmd);
 
 #ifdef HAVE_CLIENT_MONITOR_STATES
 	static void _on_state_changed(void *context, const StateChangedEventArgs *e);
@@ -74,6 +78,7 @@ protected:
 	OutputChannel *output_;
 	bool monitorStates_;
 	bool monitorConnectionState_;
+	bool monitorGraphicsUpdates_;
 	bool doRun_;
 	ClientCommandChannel commandChannel_;
 

@@ -30,6 +30,7 @@ public:
 
 	virtual bool sendResult(bool success, const std::string &extra = "");
 	virtual bool sendNotification(const std::string &category, const std::string &msg);
+
 protected:
 	int outFd_;
 };

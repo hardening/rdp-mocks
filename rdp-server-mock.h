@@ -28,13 +28,13 @@ class RdpServerMock;
 #include <freerdp/peer.h>
 #include <freerdp/listener.h>
 
-/** @brief */
+/** @brief command channel implementation for rdp-server-mock */
 class ServerCommandChannel : public CommandChannel {
 public:
 	ServerCommandChannel(int fd, RdpServerMock *mock);
 	virtual ~ServerCommandChannel() = default;
 
-	BOOL onCommand(const std::string &cmd, const std::string &args) override;
+	CommandChannel::TreatResult onCommand(const std::string &cmd, const std::string &args) override;
 
 protected:
 	RdpServerMock *mock_;
@@ -46,9 +46,10 @@ struct RdpServerMockContext {
 	RdpServerMock *mock_;
 };
 
-/** @brief */
+/** @brief rdp-server-mock implementation */
 class RdpServerMock {
 	friend class ServerCommandChannel;
+
 public:
 	RdpServerMock(int inFd, OutputChannel *output);
 	~RdpServerMock();
@@ -63,8 +64,8 @@ protected:
 	static BOOL _peer_post_connect(freerdp_peer *client);
 	static BOOL _peer_activate(freerdp_peer *client);
 	static BOOL _peer_reached_state(freerdp_peer *client, CONNECTION_STATE state);
-	static BOOL _peer_keyboard_event(rdpInput* input, UINT16 flags, UINT8 code);
-	static BOOL _peer_mouse_event(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
+	static BOOL _peer_keyboard_event(rdpInput *input, UINT16 flags, UINT8 code);
+	static BOOL _peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y);
 
 protected:
 	int cmdFd_;
@@ -80,4 +81,5 @@ protected:
 	bool connectionEstablished_;
 	UINT64 pollCmdChannelStartDate_;
 	CONNECTION_STATE lastReachedState_;
+	std::string pendingRedirectHost_;
 };
