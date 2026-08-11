@@ -27,6 +27,11 @@ class RdpServerMock;
 #include <freerdp/client.h>
 #include <freerdp/peer.h>
 #include <freerdp/listener.h>
+#include <freerdp/server/disp.h>
+#include <freerdp/channels/channels.h>
+#include <freerdp/channels/drdynvc.h>
+#include <freerdp/channels/wtsvc.h>
+#include <winpr/wtsapi.h>
 
 /** @brief command channel implementation for rdp-server-mock */
 class ServerCommandChannel : public CommandChannel {
@@ -66,6 +71,8 @@ protected:
 	static BOOL _peer_reached_state(freerdp_peer *client, CONNECTION_STATE state);
 	static BOOL _peer_keyboard_event(rdpInput *input, UINT16 flags, UINT8 code);
 	static BOOL _peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y);
+	static UINT _disp_monitor_layout(
+		DispServerContext *context, const DISPLAY_CONTROL_MONITOR_LAYOUT_PDU *pdu);
 
 protected:
 	int cmdFd_;
@@ -73,6 +80,7 @@ protected:
 	bool monitorStates_;
 	bool monitorKeyEvents_;
 	bool monitorMouseEvents_;
+	bool monitorResizeEvents_;
 	bool doRun_;
 	ServerCommandChannel commandChannel_;
 
@@ -82,4 +90,7 @@ protected:
 	UINT64 pollCmdChannelStartDate_;
 	CONNECTION_STATE lastReachedState_;
 	std::string pendingRedirectHost_;
+	HANDLE vcm_;
+	DispServerContext *disp_;
+	bool dispOpened_;
 };

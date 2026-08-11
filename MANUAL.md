@@ -1,4 +1,4 @@
-# rdpMocks
+# RDP mocks
 
 This project aims to provide a mock RDP client and mock RDP server that you can use to test your RDP
 client or server. The mock program is driven by a command file or from stdin, and you can pass commands
@@ -69,13 +69,56 @@ waits for the given delay in milliseconds
 
 sends mouse moved event to (x, y)
 
-### `monitor [states|connectionState|graphics|off]`
+### `monitor <kind>[,<kind> ...]`
 
-Activates the notification of events for the given item. `states` will trace all state changes
-during the connection, `connectionState` only the status of the connection, and `graphics` traces
-graphical updates received from the server; `graphics` is on by default. `off` disables the
-tracing of events (including `graphics`). See the Notifications chapter below for the emitted
-`NOTIFICATION:` lines.
+Activates the notification of events for the given comma separated list of kinds (e.g.
+`monitor states,graphics`). `<kind>` is one of:
+
+* `states` traces all state changes during the connection.
+* `connectionState` traces only the status of the connection.
+* `graphics` traces graphical updates received from the server (on by default).
+* `channels` traces virtual channels connecting/disconnecting.
+* `off` disables the tracing of events (including `graphics`).
+
+See the Notifications chapter below for the emitted `NOTIFICATION:` lines.
+
+### `dyn-resolution <monitor> [<monitor> ...]`
+
+Sends a new monitor layout to the server over the display control ("disp") dynamic virtual
+channel, as a `DISPLAY_CONTROL_MONITOR_LAYOUT` update, and emits a `RESULT:` on the output
+channel.
+
+Each `<monitor>` describes one monitor as:
+
+```
+<width>x<height>[:originX,originY[:landscape|portrait]]
+```
+
+* `width`/`height` are required.
+* `originX,originY` default to `0,0` when omitted.
+* the orientation defaults to `landscape` when omitted, and can only be given if an origin is
+also given.
+* up to 16 monitors can be listed (space-separated); the first one listed is sent as the primary
+monitor.
+
+Examples: `dyn-resolution 1920x1080`, or
+`dyn-resolution 1920x1080 1280x1024:1920,0:portrait` for two side-by-side monitors with the
+second one in portrait mode.
+
+Possible results:
+
+* `RESULT:SUCCESS` once the update has been sent.
+* `RESULT:FAILURE:channel not ready` if the connection isn't established yet or the display
+control channel hasn't finished connecting. That channel finishes its own setup handshake
+asynchronously, some time after `connect` reports success, so wait for the `channelConnected`
+notification below (via `monitor channels`) before sending this rather than assuming it's
+immediately ready, or be prepared to retry on this failure.
+* `RESULT:FAILURE:invalid monitor spec` if a `<monitor>` argument couldn't be parsed, or none
+were given.
+* `RESULT:FAILURE:too many monitors` if more than 16 monitors were given.
+* `RESULT:FAILURE:overlapping monitors` if two of the given monitors' rectangles overlap; the
+update is rejected before it's sent.
+* `RESULT:FAILURE:send failed` if writing to the display control channel itself failed.
 
 
 ## notifications
@@ -105,10 +148,24 @@ Emitted just before `connect` transparently follows a server-initiated redirecti
 `NOTIFICATION:redirect:<host>` with the target host. Always emitted, regardless of `monitor`
 settings.
 
+### `channelConnected` / `channelDisconnected`
+
+Emitted whenever a virtual channel connects or disconnects, while `monitor channels` is active:
+`NOTIFICATION:channelConnected:<name>` / `NOTIFICATION:channelDisconnected:<name>`, e.g.
+`NOTIFICATION:channelConnected:Microsoft::Windows::RDS::DisplayControl` for the display control
+channel used by `dyn-resolution`.
+
+### `display`
+
+Emitted once the display control channel has finished its own setup handshake and received the
+server's Display Control Caps PDU, i.e. once it's actually ready for `dyn-resolution` updates
+(unlike `channelConnected` above, which only means the underlying dynamic virtual channel opened):
+`NOTIFICATION:display:channel ready`. Always emitted, regardless of `monitor` settings.
+
 
 # rdp-server-mock
 
-##commands
+## commands
 
 ### `authType [rdp | nla | tls]`
 
@@ -144,12 +201,19 @@ RDP Server Redirection PDU pointing it to `<host>`, instead of continuing the se
 Only the target host is changed; the client reconnects on the same port it originally used. The
 pending redirect is consumed (and cleared) by the next client that reaches that point.
 
-### `monitor [states|keys|mouse|off]`
+### `monitor <kind>[,<kind> ...]`
 
-Activates the notification of events from the incoming connection for the given item. `states` traces
-all state changes during the connection, `keys` traces keyboard events, and `mouse` traces mouse
-move/click events. `off` disables the tracing of events. See the Notifications chapter below for
-the emitted `NOTIFICATION:` lines.
+Activates the notification of events from the incoming connection for the given comma separated
+list of kinds (e.g. `monitor states,mouse`). `<kind>` is one of:
+
+* `states` traces all state changes during the connection.
+* `keys` traces keyboard events.
+* `mouse` traces mouse move/click events.
+* `resize` traces framebuffer size changes resulting from a monitor layout received over the
+display control ("disp") dynamic virtual channel (see `dyn-resolution` in rdp-client-mock).
+* `off` disables the tracing of events.
+
+See the Notifications chapter below for the emitted `NOTIFICATION:` lines.
 
 ### `debug <msg>`
 
@@ -174,6 +238,23 @@ Emitted for every keyboard event from the client when `monitor keys` is active:
 
 Emitted for every mouse move/click event from the client when `monitor mouse` is active:
 `NOTIFICATION:mouse:x=<x> y=<y> flags=<flags>`.
+
+### `monitor`
+
+Emitted for each monitor of a new monitor layout received from the client over the display
+control channel (see `dyn-resolution` in rdp-client-mock), while `monitor resize` is active:
+`NOTIFICATION:monitor:width=<w> height=<h> left=<l> top=<t> primary=<0|1> orientation=<orientation>`.
+`<orientation>` is one of `landscape`, `portrait`,
+`landscape_flipped`, `portrait_flipped` (or the raw numeric value for anything else). These are
+sent before the `resize` notification below.
+
+### `resize`
+
+Emitted once per monitor layout received from the client over the display control channel (see
+`dyn-resolution` in rdp-client-mock), after the per-monitor `monitor` notifications above, while
+`monitor resize` is active: `NOTIFICATION:resize:width=<w> height=<h>`. `<w>`/`<h>` are the
+resulting framebuffer size -- the bounding box of the whole layout, not any single monitor --
+and are also applied to the connection's `DesktopWidth`/`DesktopHeight` settings.
 
 ### `debug`
 

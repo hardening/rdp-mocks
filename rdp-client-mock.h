@@ -25,6 +25,7 @@ class RdpClientMock;
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
+#include <freerdp/client/disp.h>
 
 /** @brief */
 class ClientCommandChannel : public CommandChannel {
@@ -66,6 +67,10 @@ protected:
 	static BOOL _client_redirect(freerdp *instance);
 	static BOOL _client_bitmap_update(rdpContext *context, const BITMAP_UPDATE *bitmap);
 	static BOOL _client_surface_bits(rdpContext *context, const SURFACE_BITS_COMMAND *cmd);
+	static void _on_channel_connected(void *context, const ChannelConnectedEventArgs *e);
+	static void _on_channel_disconnected(void *context, const ChannelDisconnectedEventArgs *e);
+	static UINT _on_disp_caps(DispClientContext *context, UINT32 MaxNumMonitors,
+		UINT32 MaxMonitorAreaFactorA, UINT32 MaxMonitorAreaFactorB);
 
 #ifdef HAVE_CLIENT_MONITOR_STATES
 	static void _on_state_changed(void *context, const StateChangedEventArgs *e);
@@ -79,6 +84,7 @@ protected:
 	bool monitorStates_;
 	bool monitorConnectionState_;
 	bool monitorGraphicsUpdates_;
+	bool monitorChannels_;
 	bool doRun_;
 	ClientCommandChannel commandChannel_;
 
@@ -86,4 +92,5 @@ protected:
 	RdpClientMockContext *rdpClient_;
 	bool connectionEstablished_;
 	UINT64 pollCmdChannelStartDate_;
+	DispClientContext *disp_;
 };
