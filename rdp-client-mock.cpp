@@ -351,8 +351,14 @@ int RdpClientMock::run() {
 			pollDelay = (1 + pollCmdChannelStartDate_ - now);
 		}
 
-		DWORD nrdpHandles = freerdp_get_event_handles(
-			&rdpClient_->context_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+		/* before "connect" has run, the FreeRDP context has no transport yet: its layer defaults
+		 * to closed, so freerdp_check_event_handles() below would spuriously report an error and
+		 * kill this process before it ever gets to connect (usually masked because the initial
+		 * commands arrive close enough together to be drained in a single pollFd()/treat() before
+		 * this point is ever reached -- but not guaranteed, e.g. under CPU contention) */
+		DWORD nrdpHandles = connectionEstablished_ ? freerdp_get_event_handles(&rdpClient_->context_,
+														 &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles)
+													: 0;
 		if (nrdpHandles)
 			nhandles += nrdpHandles;
 		DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, pollDelay);
@@ -390,7 +396,7 @@ int RdpClientMock::run() {
 			}
 		}
 
-		if (!freerdp_check_event_handles(&rdpClient_->context_))
+		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->context_))
 			doRun_ = false;
 	}
 

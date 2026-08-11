@@ -194,6 +194,20 @@ Sets the path to the SAM file used to validate credentials for NTLM-based NLA au
 Listen for an incoming connection on the optional address/port (defaults to 127.0.0.1:3389), on the outputChannel it emits `RESULT:SUCCESS` when
 a peer connects or a `RESULT:FAILURE` if something when wrong either during setup of the listener or when accepting the peer.
 
+### `bitmap_update <path> [<x> <y>]`
+
+Loads the image at `<path>` and sends it to the connected peer as one or more legacy
+`BITMAP_UPDATE` rectangles, at the given top-left position (defaults to `0 0`).
+
+Possible results:
+
+* `RESULT:SUCCESS` once the update has been sent.
+* `RESULT:FAILURE:not ready` if the peer was accepted (see `listen`'s
+`RESULT:SUCCESS:accepted`) but this process hasn't yet finished processing the rest of the
+connection sequence -- that happens asynchronously, a moment after `accepted`, so callers should
+be prepared to retry on this failure rather than assuming it's immediately ready.
+* `RESULT:FAILURE:send failed` if sending the update over the connection failed.
+
 ### `redirect <host>`
 
 Once set, the next client to complete negotiation (see `RdpServerMock::_peer_activate`) is sent an

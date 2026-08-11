@@ -79,9 +79,29 @@ bool testBitmapUpdate(const char *serverPath, const char *clientPath, const char
 	/* ask the server to send the logo at (0,0) and check the client reports at least one
 	 * graphics update whose top-left rectangle corner is at the origin */
 	if (ok) {
-		ok = sendCommand(server, std::string("bitmap_update ") + logoPath + " 0 0");
-		if (!ok)
-			fprintf(stderr, "unable to send bitmap_update command to server\n");
+		/* "accepted" above only means the peer was accepted at the TCP level -- the server's own
+		 * connectionEstablished_ flips a bit later, once its event loop gets to process the rest
+		 * of the connection sequence (see RdpServerMock::_peer_post_connect), so "bitmap_update"
+		 * can still report RESULT:FAILURE:not ready for a moment even here; retry instead of
+		 * assuming a single attempt is enough */
+		bool sent = false;
+		for (int attempt = 0; ok && !sent && attempt < 50; attempt++) {
+			ok = sendCommand(server, std::string("bitmap_update ") + logoPath + " 0 0") &&
+				readLine(server, line, 5000);
+			if (!ok) {
+				fprintf(stderr, "unable to send bitmap_update command to server\n");
+			} else if (line == "RESULT:SUCCESS") {
+				sent = true;
+			} else if (line == "RESULT:FAILURE:not ready") {
+				usleep(100 * 1000);
+			} else {
+				fprintf(stderr, "unexpected bitmap_update result (got '%s')\n", line.c_str());
+				ok = false;
+			}
+		}
+		if (ok && !sent)
+			fprintf(stderr, "bitmap_update never became ready\n");
+		ok = ok && sent;
 	}
 
 	if (ok) {

@@ -73,8 +73,15 @@ protected:
 	static BOOL _peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y);
 	static UINT _disp_monitor_layout(
 		DispServerContext *context, const DISPLAY_CONTROL_MONITOR_LAYOUT_PDU *pdu);
+	static BOOL _disp_channel_id_assigned(DispServerContext *context, UINT32 channelId);
+	static BOOL _dvc_creation_status(void *userdata, UINT32 channelId, INT32 creationStatus);
 
 protected:
+	/** polls the command fd (if @p pollFd) and treats whatever is buffered, stopping doRun_ on
+	 * error/close -- shared by run()'s main loop and the "listen" command's own accept wait,
+	 * which needs to keep servicing commands (e.g. "quit") while it blocks for a peer */
+	void pollAndTreatCommands(bool pollFd);
+
 	int cmdFd_;
 	OutputChannel *output_;
 	bool monitorStates_;
@@ -93,4 +100,5 @@ protected:
 	HANDLE vcm_;
 	DispServerContext *disp_;
 	bool dispOpened_;
+	UINT32 dispChannelId_;
 };

@@ -189,7 +189,8 @@ RdpServerMock::RdpServerMock(int fd, OutputChannel *output)
 , lastReachedState_((CONNECTION_STATE)-1)
 , vcm_(nullptr)
 , disp_(nullptr)
-, dispOpened_(false) {
+, dispOpened_(false)
+, dispChannelId_(0) {
 	settings_ = freerdp_settings_new(FREERDP_SETTINGS_SERVER_MODE);
 }
 
@@ -268,6 +269,7 @@ BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *cli
 		freerdp_peer_context_free(client);
 		return FALSE;
 	}
+	WTSVirtualChannelManagerSetDVCCreationCallback(mock->vcm_, _dvc_creation_status, mock);
 
 	mock->peer_ = client;
 	return TRUE;
@@ -285,6 +287,7 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 		mock->disp_->rdpcontext = client->context;
 		mock->disp_->custom = mock;
 		mock->disp_->DispMonitorLayout = _disp_monitor_layout;
+		mock->disp_->ChannelIdAssigned = _disp_channel_id_assigned;
 		/* disp_server_context_new() leaves these at 0; an advertised MaxNumMonitors of 0 makes
 		 * the client clamp every monitor layout it sends down to 0 monitors (see
 		 * disp_send_display_control_monitor_layout_pdu's NumMonitors clamp), so the caps we send
@@ -417,6 +420,54 @@ UINT RdpServerMock::_disp_monitor_layout(
 	return CHANNEL_RC_OK;
 }
 
+BOOL RdpServerMock::_disp_channel_id_assigned(DispServerContext *context, UINT32 channelId) {
+	RdpServerMock *mock = (RdpServerMock *)context->custom;
+	mock->dispChannelId_ = channelId;
+	return TRUE;
+}
+
+BOOL RdpServerMock::_dvc_creation_status(void *userdata, UINT32 channelId, INT32 creationStatus) {
+	RdpServerMock *mock = (RdpServerMock *)userdata;
+
+	/* disp_->Open() only creates our local end of the "disp" DVC and hands back its channel id
+	 * (see _disp_channel_id_assigned) -- the client hasn't actually accepted the channel yet at
+	 * that point, so sending DisplayControlCaps right there races the client's own channel setup
+	 * (and can lose that race under load). This fires once the client's create response for the
+	 * channel actually arrives, which is the real "ready for traffic" signal; scoped by channelId
+	 * so it stays correct if more server-opened DVCs are added later. */
+	if (mock->disp_ && channelId == mock->dispChannelId_) {
+		if (creationStatus >= 0)
+			IFCALLRESULT(CHANNEL_RC_OK, mock->disp_->DisplayControlCaps, mock->disp_);
+		else
+			WLog_ERR(TAG, "disp channel creation failed with status %d", (int)creationStatus);
+	}
+	return TRUE;
+}
+
+void RdpServerMock::pollAndTreatCommands(bool pollFd) {
+	if (pollFd) {
+		switch (commandChannel_.pollFd()) {
+		case CommandChannel::POLL_SUCCESS:
+			break;
+		case CommandChannel::POLL_ERROR:
+		case CommandChannel::POLL_CLOSED:
+			doRun_ = false;
+			return;
+		}
+	}
+
+	if (commandChannel_.hasBufferData()) {
+		switch (commandChannel_.treat()) {
+		case CommandChannel::POLL_SUCCESS:
+			break;
+		case CommandChannel::POLL_ERROR:
+		case CommandChannel::POLL_CLOSED:
+			doRun_ = false;
+			break;
+		}
+	}
+}
+
 int RdpServerMock::run() {
 	HANDLE hcmd = CreateFileDescriptorEventA(nullptr, FALSE, FALSE, cmdFd_, WINPR_FD_READ);
 	if (!hcmd) {
@@ -462,29 +513,8 @@ int RdpServerMock::run() {
 			break;
 		}
 
-		if (pollCmd) {
-			if (WaitForSingleObject(hcmd, 0) == WAIT_OBJECT_0) {
-				switch (commandChannel_.pollFd()) {
-				case CommandChannel::POLL_SUCCESS:
-					break;
-				case CommandChannel::POLL_ERROR:
-				case CommandChannel::POLL_CLOSED:
-					doRun_ = FALSE;
-					break;
-				}
-			}
-
-			if (commandChannel_.hasBufferData()) {
-				switch (commandChannel_.treat()) {
-				case CommandChannel::POLL_SUCCESS:
-					break;
-				case CommandChannel::POLL_ERROR:
-				case CommandChannel::POLL_CLOSED:
-					doRun_ = FALSE;
-					break;
-				}
-			}
-		}
+		if (pollCmd)
+			pollAndTreatCommands(WaitForSingleObject(hcmd, 0) == WAIT_OBJECT_0);
 
 		if (peer_ && !peer_->CheckFileDescriptor(peer_)) {
 			peer_->Disconnect(peer_);
@@ -499,6 +529,7 @@ int RdpServerMock::run() {
 				vcm_ = nullptr;
 			}
 			dispOpened_ = false;
+			dispChannelId_ = 0;
 			freerdp_peer_context_free(peer_);
 			freerdp_peer_free(peer_);
 			peer_ = nullptr;
@@ -518,10 +549,11 @@ int RdpServerMock::run() {
 			} else if (disp_ && !dispOpened_ &&
 				WTSVirtualChannelManagerIsChannelJoined(vcm_, DRDYNVC_SVC_CHANNEL_NAME) &&
 				WTSVirtualChannelManagerGetDrdynvcState(vcm_) == DRDYNVC_STATE_READY) {
-				if (disp_->Open(disp_) == CHANNEL_RC_OK) {
+				/* Open() only creates our local end of the channel; DisplayControlCaps is sent
+				 * from _dvc_creation_status() once the client's own create response for it
+				 * actually arrives, not here -- see that function */
+				if (disp_->Open(disp_) == CHANNEL_RC_OK)
 					dispOpened_ = true;
-					IFCALLRESULT(CHANNEL_RC_OK, disp_->DisplayControlCaps, disp_);
-				}
 			}
 		}
 	}
@@ -654,18 +686,36 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 
 		mock_->output_->sendResult(true, "listen");
 
-		/* block here until a connection is accepted */
-		while (!mock_->peer_) {
+		/* block here until a connection is accepted, but keep servicing the command channel
+		 * concurrently (via the same hcmd event run() itself waits on): a peer that never shows
+		 * up (client crashed, never started, or otherwise didn't connect) is not an error by
+		 * itself, so without this a plain WaitForMultipleObjects(..., INFINITE) below would wedge
+		 * this process forever -- unable to even react to "quit" -- instead of just failing this
+		 * one command */
+		HANDLE hcmd = CreateFileDescriptorEventA(nullptr, FALSE, FALSE, mock_->cmdFd_, WINPR_FD_READ);
+		while (mock_->doRun_ && !mock_->peer_) {
 			HANDLE handles[MAXIMUM_WAIT_OBJECTS];
-			DWORD nhandles = listener->GetEventHandles(listener, handles, MAXIMUM_WAIT_OBJECTS);
-			if (!nhandles) {
+			DWORD nhandles = 0;
+			if (hcmd)
+				handles[nhandles++] = hcmd;
+
+			DWORD nlistener =
+				listener->GetEventHandles(listener, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+			if (!nlistener) {
 				WLog_ERR(TAG, "unable to get listener event handles");
 				mock_->output_->sendResult(false, "can't get handles");
 				break;
 			}
+			nhandles += nlistener;
 
-			if (WaitForMultipleObjects(nhandles, handles, FALSE, INFINITE) == WAIT_FAILED)
+			DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, INFINITE);
+			if (status == WAIT_FAILED)
 				break;
+
+			if (hcmd && status == WAIT_OBJECT_0) {
+				mock_->pollAndTreatCommands(true);
+				continue;
+			}
 
 			if (!listener->CheckFileDescriptor(listener)) {
 				mock_->output_->sendResult(false, "error accepting peer");
@@ -673,6 +723,8 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 				break;
 			}
 		}
+		if (hcmd)
+			CloseHandle(hcmd);
 
 		BOOL accepted = (mock_->peer_ != nullptr);
 
@@ -691,9 +743,15 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		mock_->pendingRedirectHost_ = args;
 
 	} else if (cmd == "bitmap_update") {
+		/* like "dyn-resolution" on the client side, this is a runtime condition (the peer is
+		 * accepted -- see "listen"'s RESULT:SUCCESS:accepted -- some time before this process's
+		 * own event loop gets to run the rest of the connection sequence and flip
+		 * connectionEstablished_, see _peer_post_connect), not a misuse of the command itself --
+		 * report it as a RESULT:FAILURE that the caller can retry instead of TREAT_ERROR, which
+		 * would tear down the whole server */
 		if (!mock_->peer_ || !mock_->connectionEstablished_) {
-			WLog_ERR(TAG, "bitmap_update needs an active connection");
-			return TREAT_ERROR;
+			mock_->output_->sendResult(false, "not ready");
+			return TREAT_SUCCESS;
 		}
 
 		std::istringstream iss(args);
@@ -706,7 +764,9 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		}
 		iss >> x >> y;
 
-		return toTreatResult(sendBitmapUpdate(mock_->peer_, path, x, y));
+		bool sent = sendBitmapUpdate(mock_->peer_, path, x, y);
+		mock_->output_->sendResult(sent, sent ? "" : "send failed");
+		return toTreatResult(sent);
 
 	} else if (cmd == "pause") {
 		UINT32 delay = (UINT32)strtoul(args.c_str(), nullptr, 10);
@@ -781,8 +841,6 @@ int main(int argc, char *argv[]) {
 	if (!options.debugMode)
 		WLog_SetLogLevel(WLog_GetRoot(), WLOG_OFF);
 
-	/* installs the native (non-FreeRDS) WtsApi implementation backing WTSOpenServerA/
-	 * WTSVirtualChannelManager* below, used to expose dynamic virtual channels (e.g. "disp") */
 	if (!WTSRegisterWtsApiFunctionTable(FreeRDP_InitWtsApi())) {
 		WLog_ERR(TAG, "unable to register the WtsApi function table");
 		return 1;
