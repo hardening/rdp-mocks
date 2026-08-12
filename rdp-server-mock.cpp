@@ -180,16 +180,27 @@ RdpServerMock::RdpServerMock(int fd, OutputChannel *output)
 , monitorStates_(false)
 , monitorKeyEvents_(false)
 , monitorMouseEvents_(false)
+, monitorResizeEvents_(false)
 , doRun_(true)
 , commandChannel_(fd, this)
 , peer_(nullptr)
 , connectionEstablished_(false)
 , pollCmdChannelStartDate_(0)
-, lastReachedState_((CONNECTION_STATE)-1) {
+, lastReachedState_((CONNECTION_STATE)-1)
+, vcm_(nullptr)
+, disp_(nullptr)
+, dispOpened_(false)
+, dispChannelId_(0) {
 	settings_ = freerdp_settings_new(FREERDP_SETTINGS_SERVER_MODE);
 }
 
 RdpServerMock::~RdpServerMock() {
+	/* both disp_ and vcm_ hold references into the peer's context (e.g. vcm->client), so they
+	 * must be torn down before freerdp_peer_context_free()/freerdp_peer_free() below invalidate it */
+	if (disp_)
+		disp_server_context_free(disp_);
+	if (vcm_)
+		WTSCloseServer(vcm_);
 	if (peer_) {
 		if (connectionEstablished_)
 			peer_->Disconnect(peer_);
@@ -251,6 +262,15 @@ BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *cli
 	input->KeyboardEvent = _peer_keyboard_event;
 	input->MouseEvent = _peer_mouse_event;
 
+	mock->vcm_ = WTSOpenServerA((LPSTR)client->context);
+	if (!mock->vcm_ || mock->vcm_ == INVALID_HANDLE_VALUE) {
+		WLog_ERR(TAG, "unable to open the virtual channel manager");
+		mock->vcm_ = nullptr;
+		freerdp_peer_context_free(client);
+		return FALSE;
+	}
+	WTSVirtualChannelManagerSetDVCCreationCallback(mock->vcm_, _dvc_creation_status, mock);
+
 	mock->peer_ = client;
 	return TRUE;
 }
@@ -259,6 +279,24 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 	RdpServerMockContext *context = (RdpServerMockContext *)client->context;
 	RdpServerMock *mock = context->mock_;
 	mock->connectionEstablished_ = true;
+
+	mock->disp_ = disp_server_context_new(mock->vcm_);
+	if (!mock->disp_) {
+		WLog_ERR(TAG, "unable to create the display control channel context");
+	} else {
+		mock->disp_->rdpcontext = client->context;
+		mock->disp_->custom = mock;
+		mock->disp_->DispMonitorLayout = _disp_monitor_layout;
+		mock->disp_->ChannelIdAssigned = _disp_channel_id_assigned;
+		/* disp_server_context_new() leaves these at 0; an advertised MaxNumMonitors of 0 makes
+		 * the client clamp every monitor layout it sends down to 0 monitors (see
+		 * disp_send_display_control_monitor_layout_pdu's NumMonitors clamp), so the caps we send
+		 * out below need real limits */
+		mock->disp_->MaxNumMonitors = 16;
+		mock->disp_->MaxMonitorAreaFactorA = DISPLAY_CONTROL_MAX_MONITOR_WIDTH;
+		mock->disp_->MaxMonitorAreaFactorB = DISPLAY_CONTROL_MAX_MONITOR_HEIGHT;
+	}
+
 	return TRUE;
 }
 
@@ -318,6 +356,118 @@ BOOL RdpServerMock::_peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, U
 	return TRUE;
 }
 
+/* mirrors the "landscape"/"portrait" vocabulary accepted by rdp-client-mock's "dyn-resolution"
+ * command; the flipped variants can't be produced by that command but a real client under test
+ * can still send them, so they're covered here too */
+static std::string orientationToString(UINT32 orientation) {
+	switch (orientation) {
+	case ORIENTATION_LANDSCAPE:
+		return "landscape";
+	case ORIENTATION_PORTRAIT:
+		return "portrait";
+	case ORIENTATION_LANDSCAPE_FLIPPED:
+		return "landscape_flipped";
+	case ORIENTATION_PORTRAIT_FLIPPED:
+		return "portrait_flipped";
+	default:
+		return std::to_string(orientation);
+	}
+}
+
+UINT RdpServerMock::_disp_monitor_layout(
+	DispServerContext *context, const DISPLAY_CONTROL_MONITOR_LAYOUT_PDU *pdu) {
+	RdpServerMock *mock = (RdpServerMock *)context->custom;
+	if (!pdu->NumMonitors)
+		return CHANNEL_RC_OK;
+
+	/* the framebuffer covers the bounding box of the whole monitor layout, not any single
+	 * monitor -- e.g. two 1024x768 monitors side by side make a 2048x768 framebuffer */
+	INT64 left = pdu->Monitors[0].Left;
+	INT64 top = pdu->Monitors[0].Top;
+	INT64 right = left + pdu->Monitors[0].Width;
+	INT64 bottom = top + pdu->Monitors[0].Height;
+	for (UINT32 i = 1; i < pdu->NumMonitors; i++) {
+		const DISPLAY_CONTROL_MONITOR_LAYOUT &monitor = pdu->Monitors[i];
+		left = std::min<INT64>(left, monitor.Left);
+		top = std::min<INT64>(top, monitor.Top);
+		right = std::max<INT64>(right, (INT64)monitor.Left + monitor.Width);
+		bottom = std::max<INT64>(bottom, (INT64)monitor.Top + monitor.Height);
+	}
+	UINT32 width = (UINT32)(right - left);
+	UINT32 height = (UINT32)(bottom - top);
+
+	if (context->rdpcontext && context->rdpcontext->settings) {
+		freerdp_settings_set_uint32(context->rdpcontext->settings, FreeRDP_DesktopWidth, width);
+		freerdp_settings_set_uint32(context->rdpcontext->settings, FreeRDP_DesktopHeight, height);
+	}
+
+	if (mock->monitorResizeEvents_) {
+		/* one "monitor" notification per monitor in the layout, sent before the aggregate
+		 * "resize" notification below */
+		for (UINT32 i = 0; i < pdu->NumMonitors; i++) {
+			const DISPLAY_CONTROL_MONITOR_LAYOUT &monitor = pdu->Monitors[i];
+			mock->output_->sendNotification("monitor",
+				"width=" + std::to_string(monitor.Width) + " height=" +
+					std::to_string(monitor.Height) + " left=" + std::to_string(monitor.Left) +
+					" top=" + std::to_string(monitor.Top) + " primary=" +
+					std::to_string((monitor.Flags & DISPLAY_CONTROL_MONITOR_PRIMARY) ? 1 : 0) +
+					" orientation=" + orientationToString(monitor.Orientation));
+		}
+
+		mock->output_->sendNotification(
+			"resize", "width=" + std::to_string(width) + " height=" + std::to_string(height));
+	}
+	return CHANNEL_RC_OK;
+}
+
+BOOL RdpServerMock::_disp_channel_id_assigned(DispServerContext *context, UINT32 channelId) {
+	RdpServerMock *mock = (RdpServerMock *)context->custom;
+	mock->dispChannelId_ = channelId;
+	return TRUE;
+}
+
+BOOL RdpServerMock::_dvc_creation_status(void *userdata, UINT32 channelId, INT32 creationStatus) {
+	RdpServerMock *mock = (RdpServerMock *)userdata;
+
+	/* disp_->Open() only creates our local end of the "disp" DVC and hands back its channel id
+	 * (see _disp_channel_id_assigned) -- the client hasn't actually accepted the channel yet at
+	 * that point, so sending DisplayControlCaps right there races the client's own channel setup
+	 * (and can lose that race under load). This fires once the client's create response for the
+	 * channel actually arrives, which is the real "ready for traffic" signal; scoped by channelId
+	 * so it stays correct if more server-opened DVCs are added later. */
+	if (mock->disp_ && channelId == mock->dispChannelId_) {
+		if (creationStatus >= 0)
+			IFCALLRESULT(CHANNEL_RC_OK, mock->disp_->DisplayControlCaps, mock->disp_);
+		else
+			WLog_ERR(TAG, "disp channel creation failed with status %d", (int)creationStatus);
+	}
+	return TRUE;
+}
+
+void RdpServerMock::pollAndTreatCommands(bool pollFd) {
+	if (pollFd) {
+		switch (commandChannel_.pollFd()) {
+		case CommandChannel::POLL_SUCCESS:
+			break;
+		case CommandChannel::POLL_ERROR:
+		case CommandChannel::POLL_CLOSED:
+			doRun_ = false;
+			return;
+		}
+	}
+
+	if (commandChannel_.hasBufferData()) {
+		switch (commandChannel_.treat()) {
+		case CommandChannel::POLL_SUCCESS:
+			break;
+		case CommandChannel::POLL_ERROR:
+		case CommandChannel::POLL_CLOSED:
+			doRun_ = false;
+			break;
+		}
+	}
+}
+
 int RdpServerMock::run() {
 	HANDLE hcmd = CreateFileDescriptorEventA(nullptr, FALSE, FALSE, cmdFd_, WINPR_FD_READ);
 	if (!hcmd) {
@@ -344,6 +494,9 @@ int RdpServerMock::run() {
 			nhandles +=
 				peer_->GetEventHandles(peer_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
 
+		if (vcm_)
+			handles[nhandles++] = WTSVirtualChannelManagerGetEventHandle(vcm_);
+
 		DWORD status = WAIT_TIMEOUT;
 		if (nhandles)
 			status = WaitForMultipleObjectsEx(nhandles, handles, FALSE, pollDelay, TRUE);
@@ -360,37 +513,48 @@ int RdpServerMock::run() {
 			break;
 		}
 
-		if (pollCmd) {
-			if (WaitForSingleObject(hcmd, 0) == WAIT_OBJECT_0) {
-				switch (commandChannel_.pollFd()) {
-				case CommandChannel::POLL_SUCCESS:
-					break;
-				case CommandChannel::POLL_ERROR:
-				case CommandChannel::POLL_CLOSED:
-					doRun_ = FALSE;
-					break;
-				}
-			}
-
-			if (commandChannel_.hasBufferData()) {
-				switch (commandChannel_.treat()) {
-				case CommandChannel::POLL_SUCCESS:
-					break;
-				case CommandChannel::POLL_ERROR:
-				case CommandChannel::POLL_CLOSED:
-					doRun_ = FALSE;
-					break;
-				}
-			}
-		}
+		if (pollCmd)
+			pollAndTreatCommands(WaitForSingleObject(hcmd, 0) == WAIT_OBJECT_0);
 
 		if (peer_ && !peer_->CheckFileDescriptor(peer_)) {
 			peer_->Disconnect(peer_);
+			/* both hold references into the peer's context (e.g. vcm->client), so they must be
+			 * torn down before freerdp_peer_context_free()/freerdp_peer_free() below invalidate it */
+			if (disp_) {
+				disp_server_context_free(disp_);
+				disp_ = nullptr;
+			}
+			if (vcm_) {
+				WTSCloseServer(vcm_);
+				vcm_ = nullptr;
+			}
+			dispOpened_ = false;
+			dispChannelId_ = 0;
 			freerdp_peer_context_free(peer_);
 			freerdp_peer_free(peer_);
 			peer_ = nullptr;
 			connectionEstablished_ = false;
 			doRun_ = false;
+		}
+
+		/* WTSVirtualChannelManagerOpen() (called via WTSVirtualChannelManagerCheckFileDescriptor's
+		 * autoOpen) attempts to open the "drdynvc" static channel and send its capabilities
+		 * request exactly once: if that first attempt runs before "drdynvc" is actually joined at
+		 * the MCS level, the send silently fails and the manager is stuck forever past
+		 * DRDYNVC_STATE_NONE. Gating on peer_->activated ensures the channel join has completed
+		 * (it happens as part of the connection sequence) before that first attempt is made. */
+		if (peer_ && vcm_ && peer_->activated) {
+			if (!WTSVirtualChannelManagerCheckFileDescriptor(vcm_)) {
+				doRun_ = false;
+			} else if (disp_ && !dispOpened_ &&
+				WTSVirtualChannelManagerIsChannelJoined(vcm_, DRDYNVC_SVC_CHANNEL_NAME) &&
+				WTSVirtualChannelManagerGetDrdynvcState(vcm_) == DRDYNVC_STATE_READY) {
+				/* Open() only creates our local end of the channel; DisplayControlCaps is sent
+				 * from _dvc_creation_status() once the client's own create response for it
+				 * actually arrives, not here -- see that function */
+				if (disp_->Open(disp_) == CHANNEL_RC_OK)
+					dispOpened_ = true;
+			}
 		}
 	}
 
@@ -522,18 +686,36 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 
 		mock_->output_->sendResult(true, "listen");
 
-		/* block here until a connection is accepted */
-		while (!mock_->peer_) {
+		/* block here until a connection is accepted, but keep servicing the command channel
+		 * concurrently (via the same hcmd event run() itself waits on): a peer that never shows
+		 * up (client crashed, never started, or otherwise didn't connect) is not an error by
+		 * itself, so without this a plain WaitForMultipleObjects(..., INFINITE) below would wedge
+		 * this process forever -- unable to even react to "quit" -- instead of just failing this
+		 * one command */
+		HANDLE hcmd = CreateFileDescriptorEventA(nullptr, FALSE, FALSE, mock_->cmdFd_, WINPR_FD_READ);
+		while (mock_->doRun_ && !mock_->peer_) {
 			HANDLE handles[MAXIMUM_WAIT_OBJECTS];
-			DWORD nhandles = listener->GetEventHandles(listener, handles, MAXIMUM_WAIT_OBJECTS);
-			if (!nhandles) {
+			DWORD nhandles = 0;
+			if (hcmd)
+				handles[nhandles++] = hcmd;
+
+			DWORD nlistener =
+				listener->GetEventHandles(listener, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+			if (!nlistener) {
 				WLog_ERR(TAG, "unable to get listener event handles");
 				mock_->output_->sendResult(false, "can't get handles");
 				break;
 			}
+			nhandles += nlistener;
 
-			if (WaitForMultipleObjects(nhandles, handles, FALSE, INFINITE) == WAIT_FAILED)
+			DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, INFINITE);
+			if (status == WAIT_FAILED)
 				break;
+
+			if (hcmd && status == WAIT_OBJECT_0) {
+				mock_->pollAndTreatCommands(true);
+				continue;
+			}
 
 			if (!listener->CheckFileDescriptor(listener)) {
 				mock_->output_->sendResult(false, "error accepting peer");
@@ -541,6 +723,8 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 				break;
 			}
 		}
+		if (hcmd)
+			CloseHandle(hcmd);
 
 		BOOL accepted = (mock_->peer_ != nullptr);
 
@@ -559,9 +743,15 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		mock_->pendingRedirectHost_ = args;
 
 	} else if (cmd == "bitmap_update") {
+		/* like "dyn-resolution" on the client side, this is a runtime condition (the peer is
+		 * accepted -- see "listen"'s RESULT:SUCCESS:accepted -- some time before this process's
+		 * own event loop gets to run the rest of the connection sequence and flip
+		 * connectionEstablished_, see _peer_post_connect), not a misuse of the command itself --
+		 * report it as a RESULT:FAILURE that the caller can retry instead of TREAT_ERROR, which
+		 * would tear down the whole server */
 		if (!mock_->peer_ || !mock_->connectionEstablished_) {
-			WLog_ERR(TAG, "bitmap_update needs an active connection");
-			return TREAT_ERROR;
+			mock_->output_->sendResult(false, "not ready");
+			return TREAT_SUCCESS;
 		}
 
 		std::istringstream iss(args);
@@ -574,7 +764,9 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		}
 		iss >> x >> y;
 
-		return toTreatResult(sendBitmapUpdate(mock_->peer_, path, x, y));
+		bool sent = sendBitmapUpdate(mock_->peer_, path, x, y);
+		mock_->output_->sendResult(sent, sent ? "" : "send failed");
+		return toTreatResult(sent);
 
 	} else if (cmd == "pause") {
 		UINT32 delay = (UINT32)strtoul(args.c_str(), nullptr, 10);
@@ -599,22 +791,39 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			{ "states", &mock_->monitorStates_ },
 			{ "keys", &mock_->monitorKeyEvents_ },
 			{ "mouse", &mock_->monitorMouseEvents_ },
+			{ "resize", &mock_->monitorResizeEvents_ },
 		};
 
-		for (const auto &entry : monitoredItems) {
-			if (args == entry.item) {
-				*entry.target = true;
-				return TREAT_SUCCESS;
-			}
-		}
+		/* args is a comma separated list of kinds, e.g. "states,mouse" */
+		size_t start = 0;
+		while (start <= args.size()) {
+			size_t comma = args.find(',', start);
+			std::string token =
+				args.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
 
-		if (args == "off") {
+			bool matched = false;
 			for (const auto &entry : monitoredItems) {
-				*entry.target = false;
+				if (token == entry.item) {
+					*entry.target = true;
+					matched = true;
+					break;
+				}
 			}
-		} else {
-			WLog_ERR(TAG, "unknown monitor kind");
-			return TREAT_ERROR;
+
+			if (!matched && token == "off") {
+				for (const auto &entry : monitoredItems)
+					*entry.target = false;
+				matched = true;
+			}
+
+			if (!matched) {
+				WLog_ERR(TAG, "unknown monitor kind: %s", token.c_str());
+				return TREAT_ERROR;
+			}
+
+			if (comma == std::string::npos)
+				break;
+			start = comma + 1;
 		}
 	}
 
@@ -631,6 +840,11 @@ int main(int argc, char *argv[]) {
 
 	if (!options.debugMode)
 		WLog_SetLogLevel(WLog_GetRoot(), WLOG_OFF);
+
+	if (!WTSRegisterWtsApiFunctionTable(FreeRDP_InitWtsApi())) {
+		WLog_ERR(TAG, "unable to register the WtsApi function table");
+		return 1;
+	}
 
 	RdpServerMock mock(options.cmdFd,
 		options.jsonOutput ? new JsonOutputChannel(options.outFd)

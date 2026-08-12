@@ -60,6 +60,14 @@ test('bitmap-update', test_bitmap_update_exe,
     timeout: 30
 )
 
+test_dyn_resolution_exe = executable('test-dyn-resolution', 'test/test-dyn-resolution.cpp',
+    link_with: test_common_lib
+)
+test('dyn-resolution', test_dyn_resolution_exe,
+    args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path()],
+    timeout: 30
+)
+
 clang_format = find_program('clang-format', required: false)
 if clang_format.found()
     format_sources = files(
@@ -72,6 +80,7 @@ if clang_format.found()
         'test/test-basic-connect.cpp',
         'test/test-redirect.cpp',
         'test/test-bitmap-update.cpp',
+        'test/test-dyn-resolution.cpp',
     )
     run_target('format',
         command: [clang_format, '-i'] + format_sources

@@ -20,6 +20,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstdlib>
+#include <sstream>
+#include <vector>
 
 #include <winpr/synch.h>
 #include <winpr/sysinfo.h>
@@ -31,16 +33,90 @@
 
 #define TAG "rdp-client-mock"
 
+#define DYN_RESOLUTION_MAX_MONITORS 16
+
+/* parses one "<width>x<height>[:<originX>,<originY>[:landscape|portrait]]" monitor spec, as used by the
+ * "dyn-resolution" command; Left/Top default to (0,0) and Orientation to landscape when omitted */
+static bool parseMonitorSpec(const std::string &spec, DISPLAY_CONTROL_MONITOR_LAYOUT &layout) {
+	layout = DISPLAY_CONTROL_MONITOR_LAYOUT{};
+
+	size_t firstColon = spec.find(':');
+	std::string sizePart = spec.substr(0, firstColon);
+	std::string rest = (firstColon == std::string::npos) ? "" : spec.substr(firstColon + 1);
+
+	size_t xPos = sizePart.find('x');
+	if (xPos == std::string::npos)
+		return false;
+	UINT32 width = (UINT32)strtoul(sizePart.substr(0, xPos).c_str(), nullptr, 10);
+	UINT32 height = (UINT32)strtoul(sizePart.c_str() + xPos + 1, nullptr, 10);
+	if (!width || !height)
+		return false;
+
+	INT32 originX = 0;
+	INT32 originY = 0;
+	UINT32 orientation = ORIENTATION_LANDSCAPE;
+
+	if (!rest.empty()) {
+		size_t secondColon = rest.find(':');
+		std::string posPart = rest.substr(0, secondColon);
+		std::string orientPart =
+			(secondColon == std::string::npos) ? "" : rest.substr(secondColon + 1);
+
+		size_t commaPos = posPart.find(',');
+		if (commaPos == std::string::npos)
+			return false;
+		originX = (INT32)strtol(posPart.substr(0, commaPos).c_str(), nullptr, 10);
+		originY = (INT32)strtol(posPart.c_str() + commaPos + 1, nullptr, 10);
+
+		if (!orientPart.empty()) {
+			if (orientPart == "landscape")
+				orientation = ORIENTATION_LANDSCAPE;
+			else if (orientPart == "portrait")
+				orientation = ORIENTATION_PORTRAIT;
+			else
+				return false;
+		}
+	}
+
+	layout.Left = originX;
+	layout.Top = originY;
+	layout.Width = width;
+	layout.Height = height;
+	layout.Orientation = orientation;
+	return true;
+}
+
+/* MS-RDPEDISP doesn't allow overlapping monitors in a layout update */
+static bool monitorsOverlap(const std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> &monitors) {
+	for (size_t i = 0; i < monitors.size(); i++) {
+		const DISPLAY_CONTROL_MONITOR_LAYOUT &a = monitors[i];
+		INT64 aLeft = a.Left, aTop = a.Top;
+		INT64 aRight = aLeft + a.Width, aBottom = aTop + a.Height;
+
+		for (size_t j = i + 1; j < monitors.size(); j++) {
+			const DISPLAY_CONTROL_MONITOR_LAYOUT &b = monitors[j];
+			INT64 bLeft = b.Left, bTop = b.Top;
+			INT64 bRight = bLeft + b.Width, bBottom = bTop + b.Height;
+
+			if (aLeft < bRight && bLeft < aRight && aTop < bBottom && bTop < aBottom)
+				return true;
+		}
+	}
+	return false;
+}
+
 RdpClientMock::RdpClientMock(int fd, OutputChannel *output)
 : cmdFd_(fd)
 , output_(output)
 , monitorStates_(false)
 , monitorConnectionState_(false)
 , monitorGraphicsUpdates_(true)
+, monitorChannels_(false)
 , doRun_(true)
 , commandChannel_(fd, this)
 , connectionEstablished_(false)
-, pollCmdChannelStartDate_(0) {
+, pollCmdChannelStartDate_(0)
+, disp_(nullptr) {
 	RDP_CLIENT_ENTRY_POINTS entryPoints;
 	ZeroMemory(&entryPoints, sizeof(entryPoints));
 	entryPoints.Version = RDP_CLIENT_INTERFACE_VERSION;
@@ -123,6 +199,8 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 	PubSub_SubscribeConnectionStateChange(pubSub, _on_connection_state_change);
 #endif
 	PubSub_SubscribeConnectionResult(pubSub, _on_connection_result);
+	PubSub_SubscribeChannelConnected(pubSub, _on_channel_connected);
+	PubSub_SubscribeChannelDisconnected(pubSub, _on_channel_disconnected);
 
 	instance->context->update->BitmapUpdate = _client_bitmap_update;
 	instance->context->update->SurfaceBits = _client_surface_bits;
@@ -160,6 +238,47 @@ BOOL RdpClientMock::_client_redirect(freerdp *instance) {
 	mock->output_->sendNotification("redirect", host ? host : "");
 
 	return TRUE;
+}
+
+void RdpClientMock::_on_channel_connected(void *context, const ChannelConnectedEventArgs *e) {
+	RdpClientMockContext *mcontext = (RdpClientMockContext *)context;
+	RdpClientMock *mock = mcontext->mock_;
+
+	if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
+		mock->disp_ = (DispClientContext *)e->pInterface;
+		mock->disp_->custom = mock;
+		mock->disp_->DisplayControlCaps = _on_disp_caps;
+	}
+
+	/* dynamic virtual channels (like "disp") finish their own setup handshake some time after
+	 * the main connection is already reported as established, so callers that need to act on a
+	 * specific channel (e.g. "dyn-resolution") have a deterministic signal to wait on instead of
+	 * guessing a delay */
+	if (mock->monitorChannels_)
+		mock->output_->sendNotification("channelConnected", e->name);
+}
+
+void RdpClientMock::_on_channel_disconnected(void *context, const ChannelDisconnectedEventArgs *e) {
+	RdpClientMockContext *mcontext = (RdpClientMockContext *)context;
+	RdpClientMock *mock = mcontext->mock_;
+
+	if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
+		mock->disp_ = nullptr;
+
+	if (mock->monitorChannels_)
+		mock->output_->sendNotification("channelDisconnected", e->name);
+}
+
+UINT RdpClientMock::_on_disp_caps(DispClientContext *context, UINT32 MaxNumMonitors,
+	UINT32 MaxMonitorAreaFactorA, UINT32 MaxMonitorAreaFactorB) {
+	RdpClientMock *mock = (RdpClientMock *)context->custom;
+
+	/* the server's Display Control Caps PDU is the actual "ready" signal for the disp channel:
+	 * the DVC itself may be connected (see _on_channel_connected) before the channel's own
+	 * capability negotiation has completed, and monitor layout updates aren't meaningful until
+	 * then */
+	mock->output_->sendNotification("display", "channel ready");
+	return CHANNEL_RC_OK;
 }
 
 BOOL RdpClientMock::_client_bitmap_update(rdpContext *context, const BITMAP_UPDATE *bitmap) {
@@ -232,8 +351,14 @@ int RdpClientMock::run() {
 			pollDelay = (1 + pollCmdChannelStartDate_ - now);
 		}
 
-		DWORD nrdpHandles = freerdp_get_event_handles(
-			&rdpClient_->context_, &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles);
+		/* before "connect" has run, the FreeRDP context has no transport yet: its layer defaults
+		 * to closed, so freerdp_check_event_handles() below would spuriously report an error and
+		 * kill this process before it ever gets to connect (usually masked because the initial
+		 * commands arrive close enough together to be drained in a single pollFd()/treat() before
+		 * this point is ever reached -- but not guaranteed, e.g. under CPU contention) */
+		DWORD nrdpHandles = connectionEstablished_ ? freerdp_get_event_handles(&rdpClient_->context_,
+														 &handles[nhandles], MAXIMUM_WAIT_OBJECTS - nhandles)
+													: 0;
 		if (nrdpHandles)
 			nhandles += nrdpHandles;
 		DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, pollDelay);
@@ -271,7 +396,7 @@ int RdpClientMock::run() {
 			}
 		}
 
-		if (!freerdp_check_event_handles(&rdpClient_->context_))
+		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->context_))
 			doRun_ = false;
 	}
 
@@ -351,6 +476,55 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		return toTreatResult(freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, width) &&
 			freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, height));
 
+	} else if (cmd == "dyn-resolution") {
+		/* unlike most commands, these are runtime conditions (the display control channel
+		 * finishes its own setup asynchronously, see _on_channel_connected) or caller-supplied
+		 * monitor data, not a misuse of the command itself -- report them as a RESULT:FAILURE
+		 * that the caller can act on (e.g. retry) instead of TREAT_ERROR, which would tear down
+		 * the whole client */
+		if (!mock_->connectionEstablished_ || !mock_->disp_) {
+			mock_->output_->sendResult(false, "channel not ready");
+			return TREAT_SUCCESS;
+		}
+
+		std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> monitors;
+		std::istringstream iss(args);
+		std::string spec;
+		bool parseError = false;
+		while (iss >> spec) {
+			DISPLAY_CONTROL_MONITOR_LAYOUT layout;
+			if (!parseMonitorSpec(spec, layout)) {
+				parseError = true;
+				break;
+			}
+			monitors.push_back(layout);
+		}
+
+		if (parseError || monitors.empty()) {
+			mock_->output_->sendResult(false, "invalid monitor spec");
+			return TREAT_SUCCESS;
+		}
+		if (monitors.size() > DYN_RESOLUTION_MAX_MONITORS) {
+			mock_->output_->sendResult(false, "too many monitors");
+			return TREAT_SUCCESS;
+		}
+		if (monitorsOverlap(monitors)) {
+			mock_->output_->sendResult(false, "overlapping monitors");
+			return TREAT_SUCCESS;
+		}
+
+		/* the first listed monitor is the primary one */
+		monitors[0].Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+		for (DISPLAY_CONTROL_MONITOR_LAYOUT &monitor : monitors) {
+			monitor.DesktopScaleFactor = 100;
+			monitor.DeviceScaleFactor = 100;
+		}
+
+		bool sent = IFCALLRESULT(CHANNEL_RC_OK, mock_->disp_->SendMonitorLayout, mock_->disp_,
+						(UINT32)monitors.size(), monitors.data()) == CHANNEL_RC_OK;
+		mock_->output_->sendResult(sent, sent ? "" : "send failed");
+		return TREAT_SUCCESS;
+
 	} else if (cmd == "connect") {
 		size_t colonPos = args.rfind(':');
 		std::string host = (colonPos == std::string::npos) ? args : args.substr(0, colonPos);
@@ -389,29 +563,44 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		mock_->doRun_ = false;
 		mock_->output_->sendResult(true);
 	} else if (cmd == "monitor") {
-		if (args == "states") {
+		/* args is a comma separated list of kinds, e.g. "states,graphics" */
+		size_t start = 0;
+		while (start <= args.size()) {
+			size_t comma = args.find(',', start);
+			std::string token =
+				args.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+
+			if (token == "states") {
 #ifdef HAVE_CLIENT_MONITOR_STATES
-			mock_->monitorStates_ = true;
+				mock_->monitorStates_ = true;
 #else
-			WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
-			return TREAT_ERROR;
+				WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
+				return TREAT_ERROR;
 #endif
-		} else if (args == "connectionState") {
+			} else if (token == "connectionState") {
 #ifdef HAVE_CLIENT_MONITOR_STATES
-			mock_->monitorConnectionState_ = true;
+				mock_->monitorConnectionState_ = true;
 #else
-			WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
-			return TREAT_ERROR;
+				WLog_ERR(TAG, "RDP client state monitoring not supported by your FreeRDP");
+				return TREAT_ERROR;
 #endif
-		} else if (args == "graphics") {
-			mock_->monitorGraphicsUpdates_ = true;
-		} else if (args == "off") {
-			mock_->monitorStates_ = false;
-			mock_->monitorConnectionState_ = false;
-			mock_->monitorGraphicsUpdates_ = false;
-		} else {
-			WLog_ERR(TAG, "unknown monitor kind");
-			return TREAT_ERROR;
+			} else if (token == "graphics") {
+				mock_->monitorGraphicsUpdates_ = true;
+			} else if (token == "channels") {
+				mock_->monitorChannels_ = true;
+			} else if (token == "off") {
+				mock_->monitorStates_ = false;
+				mock_->monitorConnectionState_ = false;
+				mock_->monitorGraphicsUpdates_ = false;
+				mock_->monitorChannels_ = false;
+			} else {
+				WLog_ERR(TAG, "unknown monitor kind: %s", token.c_str());
+				return TREAT_ERROR;
+			}
+
+			if (comma == std::string::npos)
+				break;
+			start = comma + 1;
 		}
 	}
 	return TREAT_SUCCESS;
