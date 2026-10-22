@@ -20,12 +20,17 @@
 
 class RdpClientMock;
 
+#include "clipboardHelper.h"
 #include "commandChannel.h"
 #include "outputChannel.h"
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
+#include <freerdp/client/cliprdr.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/rdpgfx.h>
+
+#include <string>
 
 /** @brief */
 class ClientCommandChannel : public CommandChannel {
@@ -39,9 +44,41 @@ protected:
 	RdpClientMock *mock_;
 };
 
-/** @brief */
+/** @brief clipboard of rdp-client-mock, sending through the cliprdr client addin */
+class ClientClipboard : public ClipboardHelper {
+public:
+	ClientClipboard(OutputChannel *output);
+
+	void attach(CliprdrClientContext *context);
+	void detach();
+
+protected:
+	UINT sendFormatList(const CLIPRDR_FORMAT_LIST *formatList) override;
+	UINT sendFormatListResponse(const CLIPRDR_FORMAT_LIST_RESPONSE *response) override;
+	UINT sendFormatDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST *request) override;
+	UINT sendFormatDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE *response) override;
+	UINT sendFileContentsRequest(const CLIPRDR_FILE_CONTENTS_REQUEST *request) override;
+	UINT sendFileContentsResponse(const CLIPRDR_FILE_CONTENTS_RESPONSE *response) override;
+
+	static UINT _monitor_ready(CliprdrClientContext *context, const CLIPRDR_MONITOR_READY *pdu);
+	static UINT _server_format_list(CliprdrClientContext *context, const CLIPRDR_FORMAT_LIST *pdu);
+	static UINT _server_format_list_response(
+		CliprdrClientContext *context, const CLIPRDR_FORMAT_LIST_RESPONSE *pdu);
+	static UINT _server_format_data_request(
+		CliprdrClientContext *context, const CLIPRDR_FORMAT_DATA_REQUEST *pdu);
+	static UINT _server_format_data_response(
+		CliprdrClientContext *context, const CLIPRDR_FORMAT_DATA_RESPONSE *pdu);
+	static UINT _server_file_contents_request(
+		CliprdrClientContext *context, const CLIPRDR_FILE_CONTENTS_REQUEST *pdu);
+	static UINT _server_file_contents_response(
+		CliprdrClientContext *context, const CLIPRDR_FILE_CONTENTS_RESPONSE *pdu);
+
+	CliprdrClientContext *context_;
+};
+
+/** @brief the client context, based on rdpClientContext as freerdp_client_context_new() requires */
 struct RdpClientMockContext {
-	rdpContext context_;
+	rdpClientContext common_;
 	RdpClientMock *mock_;
 };
 
@@ -65,12 +102,25 @@ protected:
 	static BOOL _client_preconnect(freerdp *instance);
 	static BOOL _client_postconnect(freerdp *instance);
 	static BOOL _client_redirect(freerdp *instance);
+	static void _client_postdisconnect(freerdp *instance);
+	static BOOL _client_desktop_resize(rdpContext *context);
 	static BOOL _client_bitmap_update(rdpContext *context, const BITMAP_UPDATE *bitmap);
 	static BOOL _client_surface_bits(rdpContext *context, const SURFACE_BITS_COMMAND *cmd);
 	static void _on_channel_connected(void *context, const ChannelConnectedEventArgs *e);
 	static void _on_channel_disconnected(void *context, const ChannelDisconnectedEventArgs *e);
 	static UINT _on_disp_caps(DispClientContext *context, UINT32 MaxNumMonitors,
 		UINT32 MaxMonitorAreaFactorA, UINT32 MaxMonitorAreaFactorB);
+	static UINT _on_gfx_caps_confirm(
+		RdpgfxClientContext *context, const RDPGFX_CAPS_CONFIRM_PDU *pdu);
+	static UINT _on_gfx_surface_command(
+		RdpgfxClientContext *context, const RDPGFX_SURFACE_COMMAND *cmd);
+	static UINT _on_gdi_gfx_caps_confirm(
+		RdpgfxClientContext *context, const RDPGFX_CAPS_CONFIRM_PDU *pdu);
+	static UINT _on_gdi_gfx_surface_command(
+		RdpgfxClientContext *context, const RDPGFX_SURFACE_COMMAND *cmd);
+	void onGfxCapsConfirm();
+	void onGfxSurfaceCommand(const RDPGFX_SURFACE_COMMAND *cmd);
+	bool writeScreenshot(const std::string &path, std::string &error);
 
 #ifdef HAVE_CLIENT_MONITOR_STATES
 	static void _on_state_changed(void *context, const StateChangedEventArgs *e);
@@ -85,6 +135,7 @@ protected:
 	bool monitorConnectionState_;
 	bool monitorGraphicsUpdates_;
 	bool monitorChannels_;
+	bool monitorSecurity_;
 	bool doRun_;
 	ClientCommandChannel commandChannel_;
 
@@ -93,4 +144,12 @@ protected:
 	bool connectionEstablished_;
 	UINT64 pollCmdChannelStartDate_;
 	DispClientContext *disp_;
+	RdpgfxClientContext *gfx_;
+
+	ClientClipboard clipboard_;
+
+	bool screenshotsEnabled_;
+	pBitmapUpdate gdiBitmapUpdate_;
+	pSurfaceBits gdiSurfaceBits_;
+	pcRdpgfxSurfaceCommand gdiGfxSurfaceCommand_;
 };

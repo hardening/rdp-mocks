@@ -44,3 +44,10 @@ Otherwise you can use the accendino file that will pull all the needed dependenc
 # pip install accendino
 # accendino --targets=rdp-mocks rdp-mocks.accendino
 ```
+
+## Python test helpers
+
+The [`python/`](python/) directory has a standalone, pip-installable Python package
+(`pip install ./python`) with `RdpClientMock`/`RdpServerMock` driver classes for writing tests
+against these binaries without hand-rolling the command/notification protocol yourself. See
+[python/README.md](python/README.md) for install instructions and a quickstart.
