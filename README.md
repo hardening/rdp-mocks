@@ -37,6 +37,11 @@ rdpmocks are built using meson, with FreeRDP3 packages already installed:
 # ninja
 ```
 
+The test programs are built by default and run with `meson test`, configure with
+`-Dtests=false` to skip them. `meson install` installs `rdp-client-mock` and `rdp-server-mock`
+in `<prefix>/bin`, and [MANUAL.md](MANUAL.md) in
+`<prefix>/share/doc/rdpmocks`.
+
 Otherwise you can use the accendino file that will pull all the needed dependencies:
 ```console
 # python -m venv _venv
