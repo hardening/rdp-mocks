@@ -55,6 +55,17 @@ Sets the password for the connection
 
 Sets the domain for the connection
 
+### `alternateShell <command line>`
+
+Sets the alternate shell sent to the server in the Info PDU (`FreeRDP_AlternateShell`): the
+program the server should start instead of the regular desktop shell. The value is the rest of
+the line and may contain spaces, e.g. `alternateShell C:\Program Files\app.exe --arg`.
+
+### `shellDirectory <directory>`
+
+Sets the working directory of the alternate shell sent to the server in the Info PDU
+(`FreeRDP_ShellWorkingDirectory`). The value is the rest of the line and may contain spaces.
+
 ### `geometry <width>x<height>`
 
 Sets the DesktopWidth and Height sent to the server
@@ -529,6 +540,7 @@ display control ("disp") dynamic virtual channel (see `dyn-resolution` in rdp-cl
 * `gfxFrames` traces graphics pipeline frame acknowledgements received from the client (see
 `gfx_update`).
 * `security` reports the negotiated security protocol.
+* `clientInfo` reports the information received in the client's Info PDU.
 * `clipboard` traces clipboard events, see the Clipboard chapter at the end of this manual.
 * `off` disables the tracing of events.
 
@@ -557,6 +569,20 @@ Emitted for every state change of the incoming connection when `monitor states` 
 Emitted once the connection is established, while `monitor security` is active, with the
 security protocol negotiated with the client: `NOTIFICATION:security:<protocol>`, see
 `security` in rdp-client-mock.
+
+### `clientInfo`
+
+Emitted once the connection is established, while `monitor clientInfo` is active, with the
+information the client sent in its Info PDU, one notification per field in this order (an empty
+value when the client didn't set it):
+
+* `NOTIFICATION:clientInfo:user=<user>`
+* `NOTIFICATION:clientInfo:domain=<domain>`
+* `NOTIFICATION:clientInfo:alternateShell=<command line>` (see `alternateShell` in
+rdp-client-mock)
+* `NOTIFICATION:clientInfo:shellDirectory=<directory>` (see `shellDirectory` in rdp-client-mock)
+
+The values are the rest of the line and may contain spaces.
 
 ### `key`
 

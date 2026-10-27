@@ -243,6 +243,7 @@ protected:
 	bool monitorResizeEvents_;
 	bool monitorGfxFrameAcks_;
 	bool monitorSecurity_;
+	bool monitorClientInfo_;
 	bool doRun_;
 	ServerCommandChannel commandChannel_;
 

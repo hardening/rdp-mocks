@@ -1193,6 +1193,7 @@ RdpServerMock::RdpServerMock(int fd, OutputChannel *output)
 , monitorResizeEvents_(false)
 , monitorGfxFrameAcks_(false)
 , monitorSecurity_(false)
+, monitorClientInfo_(false)
 , doRun_(true)
 , commandChannel_(fd, this)
 , peer_(nullptr)
@@ -1481,6 +1482,29 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 		mock->output_->sendNotification("security",
 			securityProtocolName(
 				freerdp_settings_get_uint32(client->context->settings, FreeRDP_SelectedProtocol)));
+
+	if (mock->monitorClientInfo_) {
+		struct ClientInfoField {
+			const char *name;
+			FreeRDP_Settings_Keys_String setting;
+		};
+
+		/* received in the client's Info PDU, one notification per field so that values can
+		 * contain spaces */
+		static const ClientInfoField clientInfoFields[] = {
+			{ "user", FreeRDP_Username },
+			{ "domain", FreeRDP_Domain },
+			{ "alternateShell", FreeRDP_AlternateShell },
+			{ "shellDirectory", FreeRDP_ShellWorkingDirectory },
+		};
+
+		for (const auto &field : clientInfoFields) {
+			const char *value =
+				freerdp_settings_get_string(client->context->settings, field.setting);
+			mock->output_->sendNotification(
+				"clientInfo", std::string(field.name) + "=" + (value ? value : ""));
+		}
+	}
 
 	mock->disp_ = disp_server_context_new(mock->vcm_);
 	if (!mock->disp_) {
@@ -2325,6 +2349,7 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			{ "resize", &mock_->monitorResizeEvents_ },
 			{ "gfxFrames", &mock_->monitorGfxFrameAcks_ },
 			{ "security", &mock_->monitorSecurity_ },
+			{ "clientInfo", &mock_->monitorClientInfo_ },
 		};
 
 		/* args is a comma separated list of kinds, e.g. "states,mouse" */

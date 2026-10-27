@@ -163,6 +163,14 @@ if get_option('tests')
         timeout: 30
     )
 
+    test_client_info_exe = executable('test-client-info', 'test/test-client-info.cpp',
+        link_with: test_common_lib
+    )
+    test('client-info', test_client_info_exe,
+        args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path()],
+        timeout: 30
+    )
+
     test_clipboard_exe = executable('test-clipboard', 'test/test-clipboard.cpp',
         link_with: test_common_lib,
         dependencies: [magick_deps]
@@ -199,6 +207,7 @@ if clang_format.found()
         'test/test-screenshot.cpp',
         'test/test-clipboard.cpp',
         'test/test-auth-type.cpp',
+        'test/test-client-info.cpp',
     )
     run_target('format',
         command: [clang_format, '-i'] + format_sources

@@ -780,6 +780,8 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		{ "password", FreeRDP_Password },
 		{ "domain", FreeRDP_Domain },
 		{ "authpkglist", FreeRDP_AuthenticationPackageList },
+		{ "alternateShell", FreeRDP_AlternateShell },
+		{ "shellDirectory", FreeRDP_ShellWorkingDirectory },
 	};
 
 	rdpSettings *settings = mock_->settings_;
