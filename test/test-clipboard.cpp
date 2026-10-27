@@ -270,7 +270,9 @@ bool testClipboard(const char *serverPath, const char *clientPath, const char *l
 	const std::string workDir = std::string(certDir) + "/work";
 	fs::create_directories(workDir);
 
-	int port = 50000 + (int)(getpid() % 10000) * 2;
+	/* spread out the port a bit to reduce the chance of clashing with a concurrent test run, two
+	 * consecutive ports per run (second session below), staying below 65536 */
+	int port = 44000 + (int)(getpid() % 10000) * 2;
 
 	Peer server{ "server" };
 	Peer client{ "client" };
