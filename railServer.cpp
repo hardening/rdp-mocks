@@ -118,8 +118,8 @@ UINT RailServer::start() {
 		return rc;
 	started_ = true;
 
-	/* the server initiates the rail handshake, the client answers with its own handshake and its
-	 * Client Information PDU, see _client_status() */
+	/* the server initiates the rail handshake, the client answers with its own handshake, see
+	 * _client_handshake() */
 	RAIL_HANDSHAKE_ORDER handshake = {};
 	handshake.buildNumber = RAIL_SERVER_BUILD_NUMBER;
 	return context_->ServerHandshake(context_, &handshake);
@@ -174,13 +174,15 @@ void RailServer::destroy() {
 }
 
 UINT RailServer::_client_handshake(RailServerContext *context, const RAIL_HANDSHAKE_ORDER *pdu) {
+	/* the activation can't wait for the Client Information PDU: FreeRDP clients before 3.33 only
+	 * send it once they get ARC_COMPLETED. Window orders go through the main connection, let the
+	 * main thread send them */
+	RailServer *rail = (RailServer *)context->custom;
+	SetEvent(rail->clientReadyEvent_);
 	return CHANNEL_RC_OK;
 }
 
 UINT RailServer::_client_status(RailServerContext *context, const RAIL_CLIENT_STATUS_ORDER *pdu) {
-	/* window orders go through the main connection, let the main thread send them */
-	RailServer *rail = (RailServer *)context->custom;
-	SetEvent(rail->clientReadyEvent_);
 	return CHANNEL_RC_OK;
 }
 
