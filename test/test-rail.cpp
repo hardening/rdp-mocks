@@ -83,7 +83,7 @@ bool connectPeers(Peer &server, Peer &client, const char *serverPath, const char
 	ok = ok && sendCommand(server.proc, std::string("autoCert ") + certDir);
 	if (remoteApp)
 		ok = ok && command(server, "rail on", "RESULT:SUCCESS");
-	ok = ok && sendCommand(server.proc, "monitor rail,mouse");
+	ok = ok && sendCommand(server.proc, "monitor rail,mouse,security");
 	ok = ok &&
 		command(server, "listen 127.0.0.1:" + std::to_string(port),
 			"RESULT:SUCCESS:listen 127.0.0.1:" + std::to_string(port));
@@ -323,7 +323,11 @@ bool testWindowSurface(Peer &server, Peer &client, const std::string &certDir) {
 
 /* without remote applications the rail commands fail */
 bool testNoRemoteApp(Peer &server, Peer &client) {
-	bool ok = command(server, "rail_window 1 0 0 100 100", "RESULT:FAILURE:rail not ready");
+	/* "accepted" comes as soon as the peer is accepted: wait for the end of the connection
+	 * sequence (post connect, reported by "monitor security") before expecting "already
+	 * connected" */
+	bool ok = expectLine(server, "NOTIFICATION:security:tls");
+	ok = ok && command(server, "rail_window 1 0 0 100 100", "RESULT:FAILURE:rail not ready");
 	ok = ok && command(client, "rail_exec ||notepad", "RESULT:FAILURE:rail not ready");
 	ok = ok && command(client, "rail_window_move 1 0 0 10 10", "RESULT:FAILURE:rail not ready");
 	ok = ok && command(client, "rail_sysparam workarea 0 0 10 10", "RESULT:FAILURE:rail not ready");
