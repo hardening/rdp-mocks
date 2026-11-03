@@ -151,7 +151,8 @@ bool connectPeers(Peer &server, Peer &client, const char *serverPath, const char
 		sendCommand(server.proc, "authType tls") &&
 		sendCommand(server.proc, std::string("autoCert ") + certDir) &&
 		expect(server, std::string("clipboard ") + serverClipboard, "RESULT:SUCCESS") &&
-		expect(server, "listen 127.0.0.1:" + std::to_string(port), "RESULT:SUCCESS:listen");
+		expect(server, "listen 127.0.0.1:" + std::to_string(port),
+			"RESULT:SUCCESS:listen 127.0.0.1:" + std::to_string(port));
 
 	ok = ok && sendCommand(client.proc, "monitor off") &&
 		sendCommand(client.proc, "monitor clipboard") && sendCommand(client.proc, "authType tls") &&
@@ -192,11 +193,11 @@ bool testTransfers(Peer &server, Peer &client, const std::string &workDir, const
 	/* the client's Format List announced both text formats */
 	ok = ok && waitNotification(server, "NOTIFICATION:clipboard:formats 13:,1:");
 
-	/* text, server -> client */
+	/* text, server -> client, quoted (with the quoted arguments escapes and the text ones) */
 	const std::string clientText = workDir + "/client.txt";
-	ok = ok && expect(server, "clipboard_set_text from the server", "RESULT:SUCCESS");
+	ok = ok && expect(server, "clipboard_set_text ' it\\'s\\tfrom the server '", "RESULT:SUCCESS");
 	ok = ok && getUntil(client, "clipboard_get_text " + clientText, "RESULT:SUCCESS", [&] {
-		return readFile(clientText) == "from the server";
+		return readFile(clientText) == " it's\tfrom the server ";
 	});
 	/* the server got notified of the client's requests */
 	ok = ok && waitNotification(server, "NOTIFICATION:clipboard:dataRequest format=13");
@@ -245,11 +246,15 @@ bool testTransfers(Peer &server, Peer &client, const std::string &workDir, const
 			fs::file_size(dst + "/c.txt") == 0;
 	});
 
-	/* files, server -> client */
-	const std::string clientDst = workDir + "/clientDst";
-	ok = ok && expect(server, "clipboard_set_files " + src + "/top/a.txt", "RESULT:SUCCESS");
-	ok = ok && getUntil(client, "clipboard_get_files " + clientDst, "RESULT:SUCCESS:1", [&] {
-		return readFile(clientDst + "/a.txt") == "hello";
+	/* files, server -> client, with spaces in the (quoted) paths */
+	const std::string clientDst = workDir + "/client dst";
+	writeFile(src + "/it's a file.txt", "spaces");
+	ok = ok &&
+		expect(server, "clipboard_set_files " + src + "/top/a.txt '" + src + "/it\\'s a file.txt'",
+			"RESULT:SUCCESS");
+	ok = ok && getUntil(client, "clipboard_get_files '" + clientDst + "'", "RESULT:SUCCESS:2", [&] {
+		return readFile(clientDst + "/a.txt") == "hello" &&
+			readFile(clientDst + "/it's a file.txt") == "spaces";
 	});
 
 	/* failures */
@@ -259,6 +264,9 @@ bool testTransfers(Peer &server, Peer &client, const std::string &workDir, const
 		expect(server, "clipboard_get_text " + serverText, "RESULT:FAILURE:format not available");
 	ok = ok &&
 		expect(client, "clipboard_set_image /nonexistent/image.png", "RESULT:FAILURE:invalid file");
+	ok = ok &&
+		expect(client, "clipboard_set_files 'unterminated", "RESULT:FAILURE:invalid argument");
+	ok = ok && expect(client, "clipboard_get 'a' 'b' c", "RESULT:FAILURE:invalid argument");
 	return ok;
 }
 

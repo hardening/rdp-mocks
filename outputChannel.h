@@ -18,11 +18,13 @@
 
 #pragma once
 
+#include <mutex>
 #include <string>
 
 #include <json/json.h>
 
-/** @brief */
+/** @brief emits the RESULT/NOTIFICATION lines. Channel callbacks may run on FreeRDP's channel
+ * threads, so every line is written at once under a mutex to never get interleaved */
 class OutputChannel {
 public:
 	OutputChannel(int outFd);
@@ -32,7 +34,10 @@ public:
 	virtual bool sendNotification(const std::string &category, const std::string &msg);
 
 protected:
+	bool writeLine(const std::string &line);
+
 	int outFd_;
+	std::mutex mutex_;
 };
 
 /** @brief emits one JSON object per line (NDJSON), e.g.:

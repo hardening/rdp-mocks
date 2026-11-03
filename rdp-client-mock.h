@@ -22,7 +22,9 @@ class RdpClientMock;
 
 #include "clipboardHelper.h"
 #include "commandChannel.h"
+#include "inputClient.h"
 #include "outputChannel.h"
+#include "railClient.h"
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
@@ -32,7 +34,7 @@ class RdpClientMock;
 
 #include <string>
 
-/** @brief */
+/** @brief client command channel */
 class ClientCommandChannel : public CommandChannel {
 public:
 	ClientCommandChannel(int fd, RdpClientMock *mock);
@@ -106,6 +108,14 @@ protected:
 	static BOOL _client_desktop_resize(rdpContext *context);
 	static BOOL _client_bitmap_update(rdpContext *context, const BITMAP_UPDATE *bitmap);
 	static BOOL _client_surface_bits(rdpContext *context, const SURFACE_BITS_COMMAND *cmd);
+	static BOOL _client_keyboard_indicators(rdpContext *context, UINT16 ledFlags);
+	static BOOL _client_window_create(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
+		const WINDOW_STATE_ORDER *windowState);
+	static BOOL _client_window_update(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
+		const WINDOW_STATE_ORDER *windowState);
+	static BOOL _client_window_delete(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo);
+	static BOOL _client_monitored_desktop(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
+		const MONITORED_DESKTOP_ORDER *monitoredDesktop);
 	static void _on_channel_connected(void *context, const ChannelConnectedEventArgs *e);
 	static void _on_channel_disconnected(void *context, const ChannelDisconnectedEventArgs *e);
 	static UINT _on_disp_caps(DispClientContext *context, UINT32 MaxNumMonitors,
@@ -118,9 +128,19 @@ protected:
 		RdpgfxClientContext *context, const RDPGFX_CAPS_CONFIRM_PDU *pdu);
 	static UINT _on_gdi_gfx_surface_command(
 		RdpgfxClientContext *context, const RDPGFX_SURFACE_COMMAND *cmd);
+	static UINT _on_gfx_map_surface_to_window(
+		RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_WINDOW_PDU *pdu);
+	static UINT _on_gfx_map_surface_to_scaled_window(
+		RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU *pdu);
+	static UINT _on_gdi_gfx_map_surface_to_window(
+		RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_WINDOW_PDU *pdu);
+	static UINT _on_gdi_gfx_map_surface_to_scaled_window(
+		RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU *pdu);
 	void onGfxCapsConfirm();
 	void onGfxSurfaceCommand(const RDPGFX_SURFACE_COMMAND *cmd);
 	bool writeScreenshot(const std::string &path, std::string &error);
+	/** dumps the content of an EGFX surface, whatever it is mapped to */
+	bool writeSurfaceScreenshot(UINT16 surfaceId, const std::string &path, std::string &error);
 
 #ifdef HAVE_CLIENT_MONITOR_STATES
 	static void _on_state_changed(void *context, const StateChangedEventArgs *e);
@@ -147,9 +167,13 @@ protected:
 	RdpgfxClientContext *gfx_;
 
 	ClientClipboard clipboard_;
+	RailClient rail_;
+	InputClient input_;
 
 	bool screenshotsEnabled_;
 	pBitmapUpdate gdiBitmapUpdate_;
 	pSurfaceBits gdiSurfaceBits_;
 	pcRdpgfxSurfaceCommand gdiGfxSurfaceCommand_;
+	pcRdpgfxMapSurfaceToWindow gdiGfxMapSurfaceToWindow_;
+	pcRdpgfxMapSurfaceToScaledWindow gdiGfxMapSurfaceToScaledWindow_;
 };

@@ -19,9 +19,11 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
 #include <vector>
 #include <algorithm>
 
@@ -37,7 +39,10 @@
 
 #include <Magick++.h>
 
+#include "railCommon.h"
+
 #include "rdp-server-mock.h"
+#include "inputCommon.h"
 #include "mockOptions.h"
 #include "securityProtocols.h"
 
@@ -404,6 +409,77 @@ BOOL RdpServerMock::ensureGfxSurfaces(RdpServerMock *mock) {
 
 	mock->gfxSurfacesCreated_ = true;
 	return TRUE;
+}
+
+std::string RdpServerMock::createWindowSurface(RdpServerMock *mock, const std::string &args) {
+	/* <surfaceId> <windowId> <width> <height> <RRGGBB> */
+	std::vector<std::string> argv;
+	UINT32 surfaceId = 0;
+	UINT32 windowId = 0;
+	UINT32 width = 0;
+	UINT32 height = 0;
+	UINT32 color = 0;
+	char *end = nullptr;
+	if (!splitArgs(args, argv) || argv.size() != 5 || !railParseWindowId(argv[0], surfaceId) ||
+		!surfaceId || surfaceId > UINT16_MAX || !railParseWindowId(argv[1], windowId) ||
+		!railParseWindowId(argv[2], width) || !railParseWindowId(argv[3], height) || !width ||
+		!height || width > UINT16_MAX || height > UINT16_MAX || argv[4].size() != 6)
+		return "invalid argument";
+	color = (UINT32)strtoul(argv[4].c_str(), &end, 16);
+	if (*end)
+		return "invalid argument";
+
+	/* the Reset Graphics PDU deletes every surface: the monitor surfaces come first */
+	if (!ensureGfxSurfaces(mock))
+		return "send failed";
+	for (const GfxMonitorSurface &entry : mock->gfxMonitors_) {
+		if (entry.surfaceId == surfaceId)
+			return "surface exists";
+	}
+	if (mock->gfxWindowSurfaces_.count((UINT16)surfaceId))
+		return "surface exists";
+
+	RdpgfxServerContext *gfx = mock->gfx_;
+	RDPGFX_CREATE_SURFACE_PDU create = {};
+	create.surfaceId = (UINT16)surfaceId;
+	create.width = (UINT16)width;
+	create.height = (UINT16)height;
+	create.pixelFormat = GFX_PIXEL_FORMAT_XRGB_8888;
+	if (gfx->CreateSurface(gfx, &create) != CHANNEL_RC_OK)
+		return "send failed";
+	mock->gfxWindowSurfaces_.insert((UINT16)surfaceId);
+
+	RDPGFX_MAP_SURFACE_TO_WINDOW_PDU map = {};
+	map.surfaceId = (UINT16)surfaceId;
+	map.windowId = windowId;
+	map.mappedWidth = width;
+	map.mappedHeight = height;
+	if (gfx->MapSurfaceToWindow(gfx, &map) != CHANNEL_RC_OK)
+		return "send failed";
+
+	/* the whole surface filled with the color, in its own frame unless one is open */
+	RECTANGLE_16 rect = { 0, 0, (UINT16)width, (UINT16)height };
+	RDPGFX_SOLID_FILL_PDU fill = {};
+	fill.surfaceId = (UINT16)surfaceId;
+	fill.fillPixel.R = (BYTE)(color >> 16);
+	fill.fillPixel.G = (BYTE)(color >> 8);
+	fill.fillPixel.B = (BYTE)color;
+	fill.fillPixel.XA = 0xFF;
+	fill.fillRectCount = 1;
+	fill.fillRects = &rect;
+
+	if (mock->gfxFrameOpen_)
+		return gfx->SolidFill(gfx, &fill) == CHANNEL_RC_OK ? "" : "send failed";
+
+	RDPGFX_START_FRAME_PDU start = {};
+	start.frameId = ++mock->gfxFrameId_;
+	start.timestamp = (UINT32)GetTickCount64();
+	RDPGFX_END_FRAME_PDU frameEnd = {};
+	frameEnd.frameId = start.frameId;
+	bool sent = gfx->StartFrame(gfx, &start) == CHANNEL_RC_OK &&
+		gfx->SolidFill(gfx, &fill) == CHANNEL_RC_OK &&
+		gfx->EndFrame(gfx, &frameEnd) == CHANNEL_RC_OK;
+	return sent ? "" : "send failed";
 }
 
 BOOL RdpServerMock::sendGfxSurfaceCommand(RdpServerMock *mock, RDPGFX_SURFACE_COMMAND &cmd) {
@@ -1158,6 +1234,79 @@ BOOL RdpServerMock::sendGraphicsUpdate(
 	return FALSE;
 }
 
+/** formats @p value as 0x followed by at least @p digits upper case hex digits */
+static std::string hexString(UINT32 value, int digits) {
+	char buffer[16];
+	snprintf(buffer, sizeof(buffer), "0x%0*" PRIX32, digits, value);
+	return buffer;
+}
+
+/** opens a listening TCP socket on the first address @p host resolves to, @p port 0 letting
+ * the system pick a free port, and sets @p effectiveAddress to the bound address as
+ * <ip>:<port> ([<ip>]:<port> for IPv6)
+ * @return the socket, -1 on failure */
+static int openListenSocket(const std::string &host, UINT16 port, std::string &effectiveAddress) {
+	struct addrinfo hints = {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
+
+	struct addrinfo *res = nullptr;
+	if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0)
+		return -1;
+
+	int sockfd = -1;
+	for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+		if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6)
+			continue;
+
+		sockfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (sockfd < 0)
+			continue;
+
+		int on = 1;
+		if (ai->ai_family == AF_INET6)
+			setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+		setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+		if (bind(sockfd, ai->ai_addr, ai->ai_addrlen) == 0 && listen(sockfd, 10) == 0)
+			break;
+
+		close(sockfd);
+		sockfd = -1;
+	}
+	freeaddrinfo(res);
+	if (sockfd < 0)
+		return -1;
+
+	struct sockaddr_storage addr = {};
+	socklen_t addrLen = sizeof(addr);
+	char ip[INET6_ADDRSTRLEN] = {};
+	char service[NI_MAXSERV] = {};
+	if (getsockname(sockfd, (struct sockaddr *)&addr, &addrLen) != 0 ||
+		getnameinfo((struct sockaddr *)&addr, addrLen, ip, sizeof(ip), service, sizeof(service),
+			NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
+		close(sockfd);
+		return -1;
+	}
+
+	effectiveAddress = (addr.ss_family == AF_INET6) ? std::string("[") + ip + "]" : ip;
+	effectiveAddress += std::string(":") + service;
+	return sockfd;
+}
+
+/** parses the <path> [<x> <y>] arguments of the image update commands */
+static bool parseImageArgs(const std::string &args, std::string &path, UINT32 &x, UINT32 &y) {
+	std::vector<std::string> argv;
+	if (!splitArgs(args, argv) || argv.empty() || argv.size() > 3)
+		return false;
+
+	path = argv[0];
+	x = (argv.size() > 1) ? (UINT32)strtoul(argv[1].c_str(), nullptr, 10) : 0;
+	y = (argv.size() > 2) ? (UINT32)strtoul(argv[2].c_str(), nullptr, 10) : 0;
+	return true;
+}
+
 static BOOL checkFileExists(const std::string &path) {
 	if (!winpr_PathFileExists(path.c_str())) {
 		WLog_ERR(TAG, "file does not exist: %s", path.c_str());
@@ -1211,6 +1360,7 @@ RdpServerMock::RdpServerMock(int fd, OutputChannel *output)
 , cliprdr_(nullptr)
 , cliprdrOpened_(false)
 , clipboard_(output)
+, rail_(output)
 , gfxSurfacesCreated_(false)
 , gfxFrameId_(0)
 , gfxFrameOpen_(false)
@@ -1245,6 +1395,9 @@ RdpServerMock::RdpServerMock(int fd, OutputChannel *output)
 	 * SupportMonitorLayoutPdu above (see rdp_write_bitmap_codecs_capability_set in
 	 * libfreerdp/core/capabilities.c) */
 	freerdp_settings_set_bool(settings_, FreeRDP_RemoteFxCodec, TRUE);
+
+	/* remote applications are off by default, see the "rail" command */
+	rail_.applySettings(settings_);
 }
 
 RdpServerMock::~RdpServerMock() {
@@ -1282,6 +1435,7 @@ void RdpServerMock::freeChannelContexts() {
 		rdpgfx_server_context_free(gfx_);
 		gfx_ = nullptr;
 	}
+	rail_.destroy();
 	if (cliprdr_) {
 		clipboard_.detach();
 		if (cliprdrOpened_)
@@ -1458,7 +1612,10 @@ BOOL RdpServerMock::_peer_accepted(freerdp_listener *instance, freerdp_peer *cli
 
 	rdpInput *input = client->context->input;
 	input->KeyboardEvent = _peer_keyboard_event;
+	input->UnicodeKeyboardEvent = _peer_unicode_keyboard_event;
+	input->SynchronizeEvent = _peer_synchronize_event;
 	input->MouseEvent = _peer_mouse_event;
+	input->ExtendedMouseEvent = _peer_extended_mouse_event;
 
 	mock->vcm_ = WTSOpenServerA((LPSTR)client->context);
 	if (!mock->vcm_ || mock->vcm_ == INVALID_HANDLE_VALUE) {
@@ -1504,6 +1661,11 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 			mock->output_->sendNotification(
 				"clientInfo", std::string(field.name) + "=" + (value ? value : ""));
 		}
+		mock->output_->sendNotification("clientInfo",
+			"keyboardLayout=" +
+				hexString(
+					freerdp_settings_get_uint32(client->context->settings, FreeRDP_KeyboardLayout),
+					0));
 	}
 
 	mock->disp_ = disp_server_context_new(mock->vcm_);
@@ -1559,6 +1721,13 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 		}
 	}
 
+	/* RemoteApplicationMode reflects the INFO_RAIL flag of the client's Info PDU, the static
+	 * channel itself is started from run() once the client has joined it */
+	if (mock->rail_.isEnabled() &&
+		freerdp_settings_get_bool(client->context->settings, FreeRDP_RemoteApplicationMode) &&
+		!mock->rail_.create(mock->vcm_, client->context))
+		WLog_ERR(TAG, "unable to create the rail channel context");
+
 	/* by this point every negotiation resolveCurrentEncoding() cares about except EGFX's own gfx
 	 * caps handshake has already happened (whether EGFX exists at all, and the base RDP Bitmap
 	 * Codecs capability exchange that GFX_ENCODING_LEGACY_RFX depends on) -- so this can already
@@ -1609,19 +1778,100 @@ BOOL RdpServerMock::_peer_reached_state(freerdp_peer *client, CONNECTION_STATE s
 BOOL RdpServerMock::_peer_keyboard_event(rdpInput *input, UINT16 flags, UINT8 code) {
 	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
 	RdpServerMock *mock = context->mock_;
+	if (!mock->monitorKeyEvents_)
+		return TRUE;
+
+	/* key:down|up code=<scancode> [name=<virtual key>] [extended] [extended1] [repeat] */
+	bool extended = (flags & KBD_FLAGS_EXTENDED) != 0;
+	bool extended1 = (flags & KBD_FLAGS_EXTENDED1) != 0;
+	std::string msg =
+		std::string((flags & KBD_FLAGS_RELEASE) ? "up" : "down") + " code=" + hexString(code, 2);
+	/* the extended1 prefix is only used by the pause key sequence, no name for it */
+	std::string name = extended1 ? "" : keyName(code, extended);
+	if (!name.empty())
+		msg += " name=" + name;
+	if (extended)
+		msg += " extended";
+	if (extended1)
+		msg += " extended1";
+	if (!(flags & KBD_FLAGS_RELEASE) && (flags & KBD_FLAGS_DOWN))
+		msg += " repeat";
+	mock->output_->sendNotification("key", msg);
+	return TRUE;
+}
+
+BOOL RdpServerMock::_peer_unicode_keyboard_event(rdpInput *input, UINT16 flags, UINT16 code) {
+	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
+	RdpServerMock *mock = context->mock_;
+	if (!mock->monitorKeyEvents_)
+		return TRUE;
+
+	/* unicode:down|up code=<UTF-16 code unit> [char=<character>], no character for the halves
+	 * of a surrogate pair and the control characters */
+	std::string msg =
+		std::string((flags & KBD_FLAGS_RELEASE) ? "up" : "down") + " code=" + hexString(code, 4);
+	if (code >= 0x20 && (code < 0xD800 || code > 0xDFFF)) {
+		char utf8[8] = {};
+		if (ConvertWCharNToUtf8((const WCHAR *)&code, 1, utf8, sizeof(utf8)) > 0)
+			msg += std::string(" char=") + utf8;
+	}
+	mock->output_->sendNotification("unicode", msg);
+	return TRUE;
+}
+
+BOOL RdpServerMock::_peer_synchronize_event(rdpInput *input, UINT32 flags) {
+	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
+	RdpServerMock *mock = context->mock_;
 	if (mock->monitorKeyEvents_)
-		mock->output_->sendNotification(
-			"key", "flags=" + std::to_string(flags) + " code=" + std::to_string(code));
+		mock->output_->sendNotification("sync", lockFlagsName(flags));
 	return TRUE;
 }
 
 BOOL RdpServerMock::_peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y) {
 	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
 	RdpServerMock *mock = context->mock_;
-	if (mock->monitorMouseEvents_)
-		mock->output_->sendNotification("mouse",
-			"x=" + std::to_string(x) + " y=" + std::to_string(y) +
-				" flags=" + std::to_string(flags));
+	if (!mock->monitorMouseEvents_)
+		return TRUE;
+
+	/* mouse:move|down|up|wheel|hwheel ... x=<x> y=<y> */
+	std::string position = "x=" + std::to_string(x) + " y=" + std::to_string(y);
+	std::string msg;
+	if (flags & (PTR_FLAGS_WHEEL | PTR_FLAGS_HWHEEL)) {
+		/* the rotation is a 9 bits two's complement value */
+		int delta = flags & WheelRotationMask;
+		if (flags & PTR_FLAGS_WHEEL_NEGATIVE)
+			delta -= 0x200;
+		msg = std::string((flags & PTR_FLAGS_HWHEEL) ? "hwheel" : "wheel") +
+			" delta=" + std::to_string(delta) + " " + position;
+	} else if (flags & (PTR_FLAGS_BUTTON1 | PTR_FLAGS_BUTTON2 | PTR_FLAGS_BUTTON3)) {
+		const char *button = (flags & PTR_FLAGS_BUTTON1) ? "left"
+			: (flags & PTR_FLAGS_BUTTON2)				 ? "right"
+														 : "middle";
+		msg = std::string((flags & PTR_FLAGS_DOWN) ? "down" : "up") + " button=" + button + " " +
+			position;
+	} else if (flags & PTR_FLAGS_MOVE) {
+		msg = "move " + position;
+	} else {
+		msg = "other flags=" + hexString(flags, 4) + " " + position;
+	}
+	mock->output_->sendNotification("mouse", msg);
+	return TRUE;
+}
+
+BOOL RdpServerMock::_peer_extended_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y) {
+	RdpServerMockContext *context = (RdpServerMockContext *)input->context;
+	RdpServerMock *mock = context->mock_;
+	if (!mock->monitorMouseEvents_)
+		return TRUE;
+
+	std::string position = "x=" + std::to_string(x) + " y=" + std::to_string(y);
+	std::string msg;
+	if (flags & (PTR_XFLAGS_BUTTON1 | PTR_XFLAGS_BUTTON2))
+		msg = std::string((flags & PTR_XFLAGS_DOWN) ? "down" : "up") +
+			" button=" + ((flags & PTR_XFLAGS_BUTTON1) ? "x1" : "x2") + " " + position;
+	else
+		msg = "other xflags=" + hexString(flags, 4) + " " + position;
+	mock->output_->sendNotification("mouse", msg);
 	return TRUE;
 }
 
@@ -1841,6 +2091,10 @@ int RdpServerMock::run() {
 		if (cliprdrEvent)
 			handles[nhandles++] = cliprdrEvent;
 
+		HANDLE railEvent = rail_.getEventHandle();
+		if (railEvent)
+			handles[nhandles++] = railEvent;
+
 		DWORD status = WAIT_TIMEOUT;
 		if (nhandles)
 			status = WaitForMultipleObjectsEx(nhandles, handles, FALSE, pollDelay, TRUE);
@@ -1866,6 +2120,7 @@ int RdpServerMock::run() {
 			 * torn down before freerdp_peer_context_free()/freerdp_peer_free() below invalidate it */
 			freeChannelContexts();
 			cliprdrEvent = nullptr;
+			railEvent = nullptr;
 			dispOpened_ = false;
 			dispChannelId_ = 0;
 			gfxOpened_ = false;
@@ -1873,6 +2128,7 @@ int RdpServerMock::run() {
 			gfxCapsReady_ = false;
 			gfxSurfacesCreated_ = false;
 			gfxMonitors_.clear();
+			gfxWindowSurfaces_.clear();
 			currentEncoding_ = GFX_ENCODING_NONE;
 			gfxFrameId_ = 0;
 			gfxFrameOpen_ = false;
@@ -1917,7 +2173,17 @@ int RdpServerMock::run() {
 					if (clipboard_.start() != CHANNEL_RC_OK)
 						WLog_ERR(TAG, "unable to start the clipboard channel");
 				}
+
+				if (rail_.needsStart() &&
+					WTSVirtualChannelManagerIsChannelJoined(vcm_, RAIL_SVC_CHANNEL_NAME)) {
+					UINT rc = rail_.start();
+					if (rc != CHANNEL_RC_OK)
+						WLog_ERR(TAG, "unable to start the rail channel, error %u", rc);
+				}
 			}
+
+			if (railEvent && WaitForSingleObject(railEvent, 0) == WAIT_OBJECT_0)
+				rail_.onEvent();
 
 			if (cliprdrEvent && WaitForSingleObject(cliprdrEvent, 0) == WAIT_OBJECT_0) {
 				UINT rc = cliprdr_->CheckEventHandle(cliprdr_);
@@ -1965,17 +2231,26 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 
 	rdpSettings *settings = mock_->settings_;
 
-	if (mock_->clipboard_.handleCommand(cmd, args))
+	if (mock_->clipboard_.handleCommand(cmd, args) || mock_->rail_.handleCommand(cmd, args))
 		return TREAT_SUCCESS;
 
 	for (const auto &entry : stringSettingCommands) {
 		if (cmd == entry.cmd) {
-			if (entry.check && !entry.check(args))
+			std::string value;
+			if (!unquoteArg(args, value)) {
+				WLog_ERR(TAG, "%s: invalid quoted argument", entry.cmd);
+				return TREAT_ERROR;
+			}
+			if (entry.check && !entry.check(value))
 				return TREAT_ERROR;
 			return toTreatResult(
-				freerdp_settings_set_string(settings, entry.settingId, args.c_str()));
+				freerdp_settings_set_string(settings, entry.settingId, value.c_str()));
 		}
 	}
+
+	/* the commands taking a single path or name: the rest of the line, possibly quoted */
+	std::string arg;
+	bool argOk = unquoteArg(args, arg);
 
 	if (cmd == "authType") {
 		return toTreatResult(setSecurityProtocols(settings, args));
@@ -2067,12 +2342,17 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		RdpServerMock::resolveCurrentEncoding(mock_);
 
 	} else if (cmd == "cert") {
-		return toTreatResult(loadCertificateFile(settings, args.c_str()));
+		return toTreatResult(argOk && loadCertificateFile(settings, arg.c_str()));
 
 	} else if (cmd == "key") {
-		return toTreatResult(loadPrivateKeyFile(settings, args.c_str()));
+		return toTreatResult(argOk && loadPrivateKeyFile(settings, arg.c_str()));
 
 	} else if (cmd == "autoCert") {
+		if (!argOk) {
+			WLog_ERR(TAG, "autoCert: invalid quoted argument");
+			return TREAT_ERROR;
+		}
+
 		char *makecertArgv[] = { (char *)"makecert", (char *)"-rdp", (char *)"-live",
 			(char *)"-silent", (char *)"-y", (char *)"5" };
 
@@ -2082,18 +2362,18 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 
 		BOOL ok = makecert_context_process(makecert, ARRAYSIZE(makecertArgv), makecertArgv) >= 0 &&
 			makecert_context_set_output_file_name(makecert, "rdp-server-mock") == 1 &&
-			makecert_context_output_certificate_file(makecert, args.c_str()) == 1 &&
-			makecert_context_output_private_key_file(makecert, args.c_str()) == 1;
+			makecert_context_output_certificate_file(makecert, arg.c_str()) == 1 &&
+			makecert_context_output_private_key_file(makecert, arg.c_str()) == 1;
 		makecert_context_free(makecert);
 
 		if (!ok) {
-			WLog_ERR(TAG, "unable to generate certificate in %s", args.c_str());
+			WLog_ERR(TAG, "unable to generate certificate in %s", arg.c_str());
 			return TREAT_ERROR;
 		}
 
 		return toTreatResult(
-			loadCertificateFile(settings, (args + "/rdp-server-mock.crt").c_str()) &&
-			loadPrivateKeyFile(settings, (args + "/rdp-server-mock.key").c_str()));
+			loadCertificateFile(settings, (arg + "/rdp-server-mock.crt").c_str()) &&
+			loadPrivateKeyFile(settings, (arg + "/rdp-server-mock.key").c_str()));
 
 	} else if (cmd == "listen") {
 		size_t colonPos = args.rfind(':');
@@ -2103,6 +2383,9 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			port = (UINT32)strtoul(args.c_str() + colonPos + 1, nullptr, 10);
 		if (host.empty())
 			host = "127.0.0.1";
+		/* [<IPv6>]:<port>, as reported by the result */
+		if (host.size() > 2 && host.front() == '[' && host.back() == ']')
+			host = host.substr(1, host.size() - 2);
 
 		freerdp_listener *listener = freerdp_listener_new();
 		if (!listener) {
@@ -2113,14 +2396,20 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		listener->info = mock_;
 		listener->PeerAccepted = RdpServerMock::_peer_accepted;
 
-		if (!listener->Open(listener, host.c_str(), (UINT16)port)) {
+		/* the socket is opened here rather than with listener->Open() to know the effective
+		 * address, e.g. the port picked by the system for "listen 127.0.0.1:0" */
+		std::string effectiveAddress;
+		int sockfd = openListenSocket(host, (UINT16)port, effectiveAddress);
+		if (sockfd < 0 || !listener->OpenFromSocket(listener, sockfd)) {
+			if (sockfd >= 0)
+				close(sockfd);
 			mock_->output_->sendResult(false, "can't listen");
 			WLog_ERR(TAG, "unable to listen on %s:%u", host.c_str(), port);
 			freerdp_listener_free(listener);
 			return TREAT_ERROR;
 		}
 
-		mock_->output_->sendResult(true, "listen");
+		mock_->output_->sendResult(true, "listen " + effectiveAddress);
 
 		/* block here until a connection is accepted, but keep servicing the command channel
 		 * concurrently (via the same hcmd event run() itself waits on): a peer that never shows
@@ -2173,11 +2462,11 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			return TREAT_ERROR;
 
 	} else if (cmd == "redirect") {
-		if (args.empty()) {
+		if (!argOk || arg.empty()) {
 			WLog_ERR(TAG, "redirect needs a target host");
 			return TREAT_ERROR;
 		}
-		mock_->pendingRedirectHost_ = args;
+		mock_->pendingRedirectHost_ = arg;
 
 	} else if (cmd == "bitmap_update") {
 		/* like "dyn-resolution" on the client side, this is a runtime condition (the peer is
@@ -2191,15 +2480,13 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			return TREAT_SUCCESS;
 		}
 
-		std::istringstream iss(args);
 		std::string path;
 		UINT32 x = 0;
 		UINT32 y = 0;
-		if (!(iss >> path)) {
+		if (!parseImageArgs(args, path, x, y)) {
 			WLog_ERR(TAG, "bitmap_update needs a file path");
 			return TREAT_ERROR;
 		}
-		iss >> x >> y;
 
 		bool sent = sendBitmapUpdate(mock_->peer_, path, x, y);
 		mock_->output_->sendResult(sent, sent ? "" : "send failed");
@@ -2214,15 +2501,13 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			return TREAT_SUCCESS;
 		}
 
-		std::istringstream iss(args);
 		std::string path;
 		UINT32 x = 0;
 		UINT32 y = 0;
-		if (!(iss >> path)) {
+		if (!parseImageArgs(args, path, x, y)) {
 			WLog_ERR(TAG, "gfx_update needs a file path");
 			return TREAT_ERROR;
 		}
-		iss >> x >> y;
 
 		bool sent = RdpServerMock::sendGfxUpdate(mock_, path, x, y);
 		mock_->output_->sendResult(sent, sent ? "" : "send failed");
@@ -2244,15 +2529,13 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			return TREAT_SUCCESS;
 		}
 
-		std::istringstream iss(args);
 		std::string path;
 		UINT32 x = 0;
 		UINT32 y = 0;
-		if (!(iss >> path)) {
+		if (!parseImageArgs(args, path, x, y)) {
 			WLog_ERR(TAG, "graphics_update needs a file path");
 			return TREAT_ERROR;
 		}
-		iss >> x >> y;
 
 		BOOL noUsableEncoding = FALSE;
 		bool sent = RdpServerMock::sendGraphicsUpdate(mock_, path, x, y, &noUsableEncoding);
@@ -2290,6 +2573,17 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			mock_->gfxFrameOpen_ = true;
 		mock_->output_->sendResult(sent, sent ? "" : "send failed");
 		return toTreatResult(sent);
+
+	} else if (cmd == "gfx_window_surface") {
+		if (!mock_->peer_ || !mock_->connectionEstablished_ || !mock_->gfx_ ||
+			!mock_->gfxCapsReady_) {
+			mock_->output_->sendResult(false, "not ready");
+			return TREAT_SUCCESS;
+		}
+
+		std::string error = RdpServerMock::createWindowSurface(mock_, args);
+		mock_->output_->sendResult(error.empty(), error);
+		return TREAT_SUCCESS;
 
 	} else if (cmd == "egfx_frame_end") {
 		if (!mock_->peer_ || !mock_->connectionEstablished_ || !mock_->gfx_ ||
@@ -2329,8 +2623,66 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 		mock_->clipboard_.setEnabled(args == "on");
 		mock_->output_->sendResult(true);
 
+	} else if (cmd == "rail") {
+		/* decides whether remote applications are proposed to the next accepted peer, through
+		 * the capability sets copied from settings_ in _peer_accepted */
+		if (mock_->connectionEstablished_) {
+			mock_->output_->sendResult(false, "already connected");
+			return TREAT_SUCCESS;
+		}
+		if (args != "on" && args != "off") {
+			mock_->output_->sendResult(false, "invalid argument");
+			return TREAT_SUCCESS;
+		}
+		mock_->rail_.setEnabled(args == "on");
+		bool applied = mock_->rail_.applySettings(mock_->settings_);
+		mock_->output_->sendResult(applied, applied ? "" : "settings failure");
+
+	} else if (cmd == "unicodeInput" || cmd == "horizontalWheel" || cmd == "extendedMouse") {
+		/* the input capabilities proposed to the next accepted peer, through the capability
+		 * sets copied from settings_ in _peer_accepted */
+		static const struct {
+			const char *cmd;
+			FreeRDP_Settings_Keys_Bool setting;
+		} inputCapabilities[] = {
+			{ "unicodeInput", FreeRDP_UnicodeInput },
+			{ "horizontalWheel", FreeRDP_HasHorizontalWheel },
+			{ "extendedMouse", FreeRDP_HasExtendedMouseEvent },
+		};
+
+		if (mock_->connectionEstablished_) {
+			mock_->output_->sendResult(false, "already connected");
+			return TREAT_SUCCESS;
+		}
+		if (args != "on" && args != "off") {
+			mock_->output_->sendResult(false, "invalid argument");
+			return TREAT_SUCCESS;
+		}
+		for (const auto &capability : inputCapabilities) {
+			if (cmd == capability.cmd) {
+				bool applied =
+					freerdp_settings_set_bool(settings, capability.setting, args == "on");
+				mock_->output_->sendResult(applied, applied ? "" : "settings failure");
+			}
+		}
+
+	} else if (cmd == "keyboard_indicators") {
+		/* keyboard_indicators <locks>|none: the Set Keyboard Indicators PDU */
+		if (!mock_->peer_ || !mock_->connectionEstablished_) {
+			mock_->output_->sendResult(false, "not ready");
+			return TREAT_SUCCESS;
+		}
+		UINT32 flags = 0;
+		if (!parseLockFlags(args, flags)) {
+			mock_->output_->sendResult(false, "invalid argument");
+			return TREAT_SUCCESS;
+		}
+		rdpContext *context = mock_->peer_->context;
+		bool sent = context->update->SetKeyboardIndicators(context, (UINT16)flags);
+		mock_->output_->sendResult(sent, sent ? "" : "send failed");
+
 	} else if (cmd == "debug") {
-		mock_->output_->sendNotification("debug", args);
+		mock_->output_->sendNotification("debug", argOk ? arg : args);
 
 	} else if (cmd == "quit") {
 		mock_->doRun_ = false;
@@ -2363,6 +2715,9 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 			if (token == "clipboard") {
 				mock_->clipboard_.setMonitor(true);
 				matched = true;
+			} else if (token == "rail") {
+				mock_->rail_.setMonitor(true);
+				matched = true;
 			}
 			for (const auto &entry : monitoredItems) {
 				if (token == entry.item) {
@@ -2376,6 +2731,7 @@ CommandChannel::TreatResult ServerCommandChannel::onCommand(
 				for (const auto &entry : monitoredItems)
 					*entry.target = false;
 				mock_->clipboard_.setMonitor(false);
+				mock_->rail_.setMonitor(false);
 				matched = true;
 			}
 

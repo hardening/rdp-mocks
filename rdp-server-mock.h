@@ -23,6 +23,7 @@ class RdpServerMock;
 #include "clipboardHelper.h"
 #include "commandChannel.h"
 #include "outputChannel.h"
+#include "railServer.h"
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
@@ -40,6 +41,7 @@ class RdpServerMock;
 #include <freerdp/codec/h264.h>
 #include <winpr/wtsapi.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -185,7 +187,10 @@ protected:
 	static BOOL _peer_activate(freerdp_peer *client);
 	static BOOL _peer_reached_state(freerdp_peer *client, CONNECTION_STATE state);
 	static BOOL _peer_keyboard_event(rdpInput *input, UINT16 flags, UINT8 code);
+	static BOOL _peer_unicode_keyboard_event(rdpInput *input, UINT16 flags, UINT16 code);
+	static BOOL _peer_synchronize_event(rdpInput *input, UINT32 flags);
 	static BOOL _peer_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y);
+	static BOOL _peer_extended_mouse_event(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y);
 	static UINT _disp_monitor_layout(
 		DispServerContext *context, const DISPLAY_CONTROL_MONITOR_LAYOUT_PDU *pdu);
 	static BOOL _disp_channel_id_assigned(DispServerContext *context, UINT32 channelId);
@@ -198,6 +203,8 @@ protected:
 	void freeChannelContexts();
 	static BOOL ensureMonitorLayout(RdpServerMock *mock);
 	static BOOL ensureGfxSurfaces(RdpServerMock *mock);
+	/** the gfx_window_surface command, returns the error, empty on success */
+	static std::string createWindowSurface(RdpServerMock *mock, const std::string &args);
 	static void resolveCurrentEncoding(RdpServerMock *mock);
 	static BOOL ensureH264Encoder(RdpServerMock *mock);
 	static std::vector<GfxImageSlice> splitImageOverMonitors(
@@ -264,8 +271,11 @@ protected:
 	CliprdrServerContext *cliprdr_;
 	bool cliprdrOpened_;
 	ServerClipboard clipboard_;
+	RailServer rail_;
 	bool gfxSurfacesCreated_;
 	std::vector<GfxMonitorSurface> gfxMonitors_;
+	/** the surfaces created by gfx_window_surface */
+	std::set<UINT16> gfxWindowSurfaces_;
 	UINT32 gfxFrameId_;
 	bool gfxFrameOpen_;
 	std::vector<GraphicsEncoding> encodingPriority_;

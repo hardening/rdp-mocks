@@ -74,7 +74,8 @@ bool testLegacyEncoding(const char *serverPath, const char *clientPath, const ch
 
 	std::string line;
 	if (ok) {
-		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:listen";
+		ok = readLine(server, line, 5000) &&
+			line == "RESULT:SUCCESS:listen 127.0.0.1:" + std::to_string(port);
 		if (!ok)
 			fprintf(stderr, "server did not confirm it is listening (got '%s')\n", line.c_str());
 	}

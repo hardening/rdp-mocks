@@ -56,7 +56,8 @@ bool testClientInfo(const char *serverPath, const char *clientPath) {
 
 	std::string line;
 	if (ok) {
-		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:listen";
+		ok = readLine(server, line, 5000) &&
+			line == "RESULT:SUCCESS:listen 127.0.0.1:" + std::to_string(port);
 		if (!ok)
 			fprintf(stderr, "server did not confirm it is listening (got '%s')\n", line.c_str());
 	}
@@ -65,9 +66,11 @@ bool testClientInfo(const char *serverPath, const char *clientPath) {
 	ok = ok && sendCommand(client, "authType tls");
 	ok = ok && sendCommand(client, "user testuser");
 	ok = ok && sendCommand(client, "password testpass");
-	ok = ok && sendCommand(client, "domain TESTDOMAIN");
+	/* an unquoted value is the rest of the line as is, a quoted one is unquoted (the backslashes
+	 * not followed by a quote or a backslash being kept) */
+	ok = ok && sendCommand(client, "domain 'I\\'m the best'");
 	ok = ok && sendCommand(client, "alternateShell C:\\Program Files\\app.exe --arg value");
-	ok = ok && sendCommand(client, "shellDirectory C:\\Work Dir");
+	ok = ok && sendCommand(client, "shellDirectory 'C:\\Work Dir'");
 	ok = ok && sendCommand(client, "connect 127.0.0.1:" + std::to_string(port));
 
 	if (ok) {
@@ -86,7 +89,7 @@ bool testClientInfo(const char *serverPath, const char *clientPath) {
 
 	const char *expected[] = {
 		"NOTIFICATION:clientInfo:user=testuser",
-		"NOTIFICATION:clientInfo:domain=TESTDOMAIN",
+		"NOTIFICATION:clientInfo:domain=I'm the best",
 		"NOTIFICATION:clientInfo:alternateShell=C:\\Program Files\\app.exe --arg value",
 		"NOTIFICATION:clientInfo:shellDirectory=C:\\Work Dir",
 	};

@@ -28,13 +28,16 @@
 #include <winpr/sysinfo.h>
 
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/codec/color.h>
 #include <freerdp/gdi/gfx.h>
+#include <freerdp/locale/keyboard.h>
 
 #include <Magick++.h>
 
 #include "rdp-client-mock.h"
 #include "mockOptions.h"
 #include "securityProtocols.h"
+#include "railCommon.h"
 
 #define TAG "rdp-client-mock"
 
@@ -162,10 +165,14 @@ RdpClientMock::RdpClientMock(int fd, OutputChannel *output)
 , disp_(nullptr)
 , gfx_(nullptr)
 , clipboard_(output)
+, rail_(output)
+, input_(output)
 , screenshotsEnabled_(false)
 , gdiBitmapUpdate_(nullptr)
 , gdiSurfaceBits_(nullptr)
-, gdiGfxSurfaceCommand_(nullptr) {
+, gdiGfxSurfaceCommand_(nullptr)
+, gdiGfxMapSurfaceToWindow_(nullptr)
+, gdiGfxMapSurfaceToScaledWindow_(nullptr) {
 	RDP_CLIENT_ENTRY_POINTS entryPoints;
 	ZeroMemory(&entryPoints, sizeof(entryPoints));
 	entryPoints.Version = RDP_CLIENT_INTERFACE_VERSION;
@@ -254,6 +261,15 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 
 	instance->context->update->BitmapUpdate = _client_bitmap_update;
 	instance->context->update->SurfaceBits = _client_surface_bits;
+
+	instance->context->update->SetKeyboardIndicators = _client_keyboard_indicators;
+
+	/* remote applications window orders, see the "remoteApp" command */
+	rdpWindowUpdate *window = instance->context->update->window;
+	window->WindowCreate = _client_window_create;
+	window->WindowUpdate = _client_window_update;
+	window->WindowDelete = _client_window_delete;
+	window->MonitoredDesktop = _client_monitored_desktop;
 
 	/* this is a mock client for testing, not a real client acting on behalf of a user: never
 	 * block on an interactive certificate trust decision, servers are expected to be test/mock
@@ -362,12 +378,43 @@ BOOL RdpClientMock::_client_redirect(freerdp *instance) {
 	return TRUE;
 }
 
+BOOL RdpClientMock::_client_keyboard_indicators(rdpContext *context, UINT16 ledFlags) {
+	((RdpClientMockContext *)context)->mock_->input_.onKeyboardIndicators(ledFlags);
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_window_create(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
+	const WINDOW_STATE_ORDER *windowState) {
+	((RdpClientMockContext *)context)->mock_->rail_.onWindowOrder(true, orderInfo, windowState);
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_window_update(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
+	const WINDOW_STATE_ORDER *windowState) {
+	((RdpClientMockContext *)context)->mock_->rail_.onWindowOrder(false, orderInfo, windowState);
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_window_delete(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo) {
+	((RdpClientMockContext *)context)->mock_->rail_.onWindowDelete(orderInfo);
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_monitored_desktop(rdpContext *context,
+	const WINDOW_ORDER_INFO *orderInfo, const MONITORED_DESKTOP_ORDER *monitoredDesktop) {
+	((RdpClientMockContext *)context)
+		->mock_->rail_.onMonitoredDesktop(orderInfo, context->settings);
+	return TRUE;
+}
+
 void RdpClientMock::_on_channel_connected(void *context, const ChannelConnectedEventArgs *e) {
 	RdpClientMockContext *mcontext = (RdpClientMockContext *)context;
 	RdpClientMock *mock = mcontext->mock_;
 
 	if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
 		mock->clipboard_.attach((CliprdrClientContext *)e->pInterface);
+	} else if (strcmp(e->name, RAIL_SVC_CHANNEL_NAME) == 0) {
+		mock->rail_.attach((RailClientContext *)e->pInterface);
 	} else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
 		mock->disp_ = (DispClientContext *)e->pInterface;
 		mock->disp_->custom = mock;
@@ -382,6 +429,10 @@ void RdpClientMock::_on_channel_connected(void *context, const ChannelConnectedE
 				mock->gdiGfxSurfaceCommand_ = mock->gfx_->SurfaceCommand;
 				mock->gfx_->SurfaceCommand = _on_gdi_gfx_surface_command;
 				mock->gfx_->CapsConfirm = _on_gdi_gfx_caps_confirm;
+				mock->gdiGfxMapSurfaceToWindow_ = mock->gfx_->MapSurfaceToWindow;
+				mock->gfx_->MapSurfaceToWindow = _on_gdi_gfx_map_surface_to_window;
+				mock->gdiGfxMapSurfaceToScaledWindow_ = mock->gfx_->MapSurfaceToScaledWindow;
+				mock->gfx_->MapSurfaceToScaledWindow = _on_gdi_gfx_map_surface_to_scaled_window;
 			} else {
 				WLog_ERR(TAG, "unable to initialize the gdi graphics pipeline");
 			}
@@ -389,6 +440,8 @@ void RdpClientMock::_on_channel_connected(void *context, const ChannelConnectedE
 			mock->gfx_->custom = mock;
 			mock->gfx_->SurfaceCommand = _on_gfx_surface_command;
 			mock->gfx_->CapsConfirm = _on_gfx_caps_confirm;
+			mock->gfx_->MapSurfaceToWindow = _on_gfx_map_surface_to_window;
+			mock->gfx_->MapSurfaceToScaledWindow = _on_gfx_map_surface_to_scaled_window;
 		}
 	}
 
@@ -407,6 +460,9 @@ void RdpClientMock::_on_channel_disconnected(void *context, const ChannelDisconn
 	if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
 		mock->clipboard_.detach();
 
+	if (strcmp(e->name, RAIL_SVC_CHANNEL_NAME) == 0)
+		mock->rail_.detach();
+
 	if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
 		mock->disp_ = nullptr;
 
@@ -415,6 +471,8 @@ void RdpClientMock::_on_channel_disconnected(void *context, const ChannelDisconn
 		if (gdi && gdi->gfx)
 			gdi_graphics_pipeline_uninit(gdi, mock->gfx_);
 		mock->gdiGfxSurfaceCommand_ = nullptr;
+		mock->gdiGfxMapSurfaceToWindow_ = nullptr;
+		mock->gdiGfxMapSurfaceToScaledWindow_ = nullptr;
 		mock->gfx_ = nullptr;
 	}
 
@@ -473,6 +531,32 @@ UINT RdpClientMock::_on_gdi_gfx_surface_command(
 	UINT ret = IFCALLRESULT(CHANNEL_RC_OK, mock->gdiGfxSurfaceCommand_, context, cmd);
 	mock->onGfxSurfaceCommand(cmd);
 	return ret;
+}
+
+UINT RdpClientMock::_on_gfx_map_surface_to_window(
+	RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_WINDOW_PDU *pdu) {
+	((RdpClientMock *)context->custom)->rail_.onMapSurfaceToWindow(pdu);
+	return CHANNEL_RC_OK;
+}
+
+UINT RdpClientMock::_on_gfx_map_surface_to_scaled_window(
+	RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU *pdu) {
+	((RdpClientMock *)context->custom)->rail_.onMapSurfaceToScaledWindow(pdu);
+	return CHANNEL_RC_OK;
+}
+
+UINT RdpClientMock::_on_gdi_gfx_map_surface_to_window(
+	RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_WINDOW_PDU *pdu) {
+	RdpClientMock *mock = mockFromGdiGfx(context);
+	mock->rail_.onMapSurfaceToWindow(pdu);
+	return IFCALLRESULT(CHANNEL_RC_OK, mock->gdiGfxMapSurfaceToWindow_, context, pdu);
+}
+
+UINT RdpClientMock::_on_gdi_gfx_map_surface_to_scaled_window(
+	RdpgfxClientContext *context, const RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU *pdu) {
+	RdpClientMock *mock = mockFromGdiGfx(context);
+	mock->rail_.onMapSurfaceToScaledWindow(pdu);
+	return IFCALLRESULT(CHANNEL_RC_OK, mock->gdiGfxMapSurfaceToScaledWindow_, context, pdu);
 }
 
 void RdpClientMock::onGfxSurfaceCommand(const RDPGFX_SURFACE_COMMAND *cmd) {
@@ -626,6 +710,54 @@ UINT ClientClipboard::_server_file_contents_response(
 	return ((ClientClipboard *)context->custom)->onPeerFileContentsResponse(pdu);
 }
 
+/* writes BGRX32 pixels (no line padding) as a PNG file */
+static bool writePng(const std::string &path, UINT32 width, UINT32 height,
+	const std::vector<BYTE> &pixels, std::string &error) {
+	try {
+		/* 'P' skips the padding byte */
+		Magick::Image image(width, height, "BGRP", Magick::CharPixel, pixels.data());
+		image.magick("PNG");
+		image.write(path);
+	} catch (Magick::Exception &e) {
+		WLog_ERR(TAG, "unable to write screenshot %s: %s", path.c_str(), e.what());
+		error = "write failed";
+		return false;
+	}
+	return true;
+}
+
+bool RdpClientMock::writeSurfaceScreenshot(
+	UINT16 surfaceId, const std::string &path, std::string &error) {
+	rdpGdi *gdi = rdpClient_->common_.context.gdi;
+	RdpgfxClientContext *gfx = gdi ? gdi->gfx : nullptr;
+	if (!gfx || !gfx->GetSurfaceData) {
+		error = "no gfx channel";
+		return false;
+	}
+
+	/* the surfaces are created, drawn and deleted from the drdynvc thread under the gfx mux */
+	EnterCriticalSection(&gfx->mux);
+	gdiGfxSurface *surface = (gdiGfxSurface *)gfx->GetSurfaceData(gfx, surfaceId);
+	UINT32 width = surface ? surface->width : 0;
+	UINT32 height = surface ? surface->height : 0;
+	std::vector<BYTE> pixels((size_t)width * height * 4);
+	bool copied = surface &&
+		freerdp_image_copy_no_overlap(pixels.data(), PIXEL_FORMAT_BGRX32, width * 4, 0, 0, width,
+			height, surface->data, surface->format, surface->scanline, 0, 0, nullptr,
+			FREERDP_FLIP_NONE);
+	LeaveCriticalSection(&gfx->mux);
+
+	if (!surface) {
+		error = "unknown surface";
+		return false;
+	}
+	if (!copied) {
+		error = "copy failed";
+		return false;
+	}
+	return writePng(path, width, height, pixels, error);
+}
+
 bool RdpClientMock::writeScreenshot(const std::string &path, std::string &error) {
 	rdpGdi *gdi = rdpClient_->common_.context.gdi;
 	if (!gdi || !gdi->primary_buffer) {
@@ -650,18 +782,8 @@ bool RdpClientMock::writeScreenshot(const std::string &path, std::string &error)
 	if (gfx)
 		LeaveCriticalSection(&gfx->mux);
 
-	try {
-		/* the framebuffer is PIXEL_FORMAT_BGRX32 (see _client_postconnect), 'P' skips the padding
-		 * byte */
-		Magick::Image image(width, height, "BGRP", Magick::CharPixel, pixels.data());
-		image.magick("PNG");
-		image.write(path);
-	} catch (Magick::Exception &e) {
-		WLog_ERR(TAG, "unable to write screenshot %s: %s", path.c_str(), e.what());
-		error = "write failed";
-		return false;
-	}
-	return true;
+	/* the framebuffer is PIXEL_FORMAT_BGRX32, see _client_postconnect */
+	return writePng(path, width, height, pixels, error);
 }
 
 BOOL RdpClientMock::connectClient() {
@@ -716,6 +838,9 @@ int RdpClientMock::run() {
 			: 0;
 		if (nrdpHandles)
 			nhandles += nrdpHandles;
+		HANDLE railHandle = connectionEstablished_ ? rail_.getEventHandle() : nullptr;
+		if (railHandle && nhandles < MAXIMUM_WAIT_OBJECTS)
+			handles[nhandles++] = railHandle;
 		DWORD status = WaitForMultipleObjects(nhandles, handles, FALSE, pollDelay);
 
 		switch (status) {
@@ -753,6 +878,10 @@ int RdpClientMock::run() {
 
 		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->common_.context))
 			doRun_ = false;
+
+		/* the local moves started by the server send input events, so from this thread */
+		if (doRun_ && railHandle && WaitForSingleObject(railHandle, 0) == WAIT_OBJECT_0)
+			rail_.onEvent(&rdpClient_->common_.context, input_);
 	}
 
 	if (connectionEstablished_) {
@@ -782,21 +911,54 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		{ "authpkglist", FreeRDP_AuthenticationPackageList },
 		{ "alternateShell", FreeRDP_AlternateShell },
 		{ "shellDirectory", FreeRDP_ShellWorkingDirectory },
+		{ "remoteAppCmdLine", FreeRDP_RemoteApplicationCmdLine },
 	};
 
 	rdpSettings *settings = mock_->settings_;
 
-	if (mock_->clipboard_.handleCommand(cmd, args))
+	if (mock_->clipboard_.handleCommand(cmd, args) || mock_->rail_.handleCommand(cmd, args) ||
+		mock_->input_.handleCommand(cmd, args,
+			mock_->connectionEstablished_ ? &mock_->rdpClient_->common_.context : nullptr))
 		return TREAT_SUCCESS;
 
 	for (const auto &entry : stringSettingCommands) {
-		if (cmd == entry.cmd)
+		if (cmd == entry.cmd) {
+			std::string value;
+			if (!unquoteArg(args, value)) {
+				WLog_ERR(TAG, "%s: invalid quoted argument", entry.cmd);
+				return TREAT_ERROR;
+			}
 			return toTreatResult(
-				freerdp_settings_set_string(settings, entry.settingId, args.c_str()));
+				freerdp_settings_set_string(settings, entry.settingId, value.c_str()));
+		}
 	}
 
 	if (cmd == "authType") {
 		return toTreatResult(setSecurityProtocols(settings, args));
+
+	} else if (cmd == "remoteApp") {
+		std::string program;
+		if (!unquoteArg(args, program)) {
+			WLog_ERR(TAG, "remoteApp: invalid quoted argument");
+			return TREAT_ERROR;
+		}
+		/* RemoteApplicationMode also makes freerdp_client_load_addins() load the rail addin */
+		return toTreatResult(
+			freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, TRUE) &&
+			freerdp_settings_set_string(
+				settings, FreeRDP_RemoteApplicationProgram, program.c_str()));
+
+	} else if (cmd == "keyboardLayout") {
+		/* a layout id (e.g. 0x40C) or name (e.g. French) */
+		char *end = nullptr;
+		DWORD layout = (DWORD)strtoul(args.c_str(), &end, 0);
+		if (args.empty() || !end || *end)
+			layout = freerdp_keyboard_get_layout_id_from_name(args.c_str());
+		if (!layout) {
+			WLog_ERR(TAG, "unknown keyboard layout: %s", args.c_str());
+			return TREAT_ERROR;
+		}
+		return toTreatResult(freerdp_settings_set_uint32(settings, FreeRDP_KeyboardLayout, layout));
 
 	} else if (cmd == "adminMode") {
 		if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, TRUE))
@@ -964,14 +1126,37 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		/* same as "dyn-resolution": runtime conditions are reported as a RESULT:FAILURE rather
 		 * than a TREAT_ERROR that would tear down the whole client */
 		std::string error;
+		std::string path;
 		if (!mock_->screenshotsEnabled_)
 			error = "screenshots not enabled";
 		else if (!mock_->connectionEstablished_)
 			error = "not connected";
-		else if (args.empty())
+		else if (!unquoteArg(args, path))
+			error = "invalid argument";
+		else if (path.empty())
 			error = "missing file name";
 		else
-			mock_->writeScreenshot(args, error);
+			mock_->writeScreenshot(path, error);
+
+		mock_->output_->sendResult(error.empty(), error);
+		return TREAT_SUCCESS;
+
+	} else if (cmd == "screenshot_surface") {
+		/* <surfaceId> <file>, the file being the rest of the line */
+		std::string error;
+		std::vector<std::string> argv;
+		UINT32 surfaceId = 0;
+		if (!mock_->screenshotsEnabled_)
+			error = "screenshots not enabled";
+		else if (!mock_->connectionEstablished_)
+			error = "not connected";
+		else if (!splitArgs(args, argv, 2) || argv.empty() ||
+			!railParseWindowId(argv[0], surfaceId) || surfaceId > UINT16_MAX)
+			error = "invalid argument";
+		else if (argv.size() < 2 || argv[1].empty())
+			error = "missing file name";
+		else
+			mock_->writeSurfaceScreenshot((UINT16)surfaceId, argv[1], error);
 
 		mock_->output_->sendResult(error.empty(), error);
 		return TREAT_SUCCESS;
@@ -996,20 +1181,6 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 			mock_->pollCmdChannelStartDate_ = GetTickCount64() + delay;
 		return TREAT_SKIP;
 
-	} else if (cmd == "mouse") {
-		if (!mock_->connectionEstablished_)
-			return TREAT_ERROR;
-		size_t spacePos = args.rfind(' ');
-		if (spacePos == std::string::npos)
-			return TREAT_ERROR;
-		std::string xStr = args.substr(0, spacePos);
-		std::string yStr = args.substr(spacePos + 1);
-
-		UINT32 x = strtoul(xStr.c_str(), nullptr, 10);
-		UINT32 y = strtoul(yStr.c_str(), nullptr, 10);
-
-		if (!freerdp_input_send_mouse_event(mock_->rdpClient_->common_.context.input, 0, x, y))
-			return TREAT_ERROR;
 	} else if (cmd == "quit") {
 		mock_->doRun_ = false;
 		mock_->output_->sendResult(true);
@@ -1043,8 +1214,14 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 				mock_->monitorSecurity_ = true;
 			} else if (token == "clipboard") {
 				mock_->clipboard_.setMonitor(true);
+			} else if (token == "rail") {
+				mock_->rail_.setMonitor(true);
+			} else if (token == "keyboard") {
+				mock_->input_.setMonitor(true);
 			} else if (token == "off") {
 				mock_->clipboard_.setMonitor(false);
+				mock_->rail_.setMonitor(false);
+				mock_->input_.setMonitor(false);
 				mock_->monitorStates_ = false;
 				mock_->monitorConnectionState_ = false;
 				mock_->monitorGraphicsUpdates_ = false;

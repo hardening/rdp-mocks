@@ -67,13 +67,15 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 	 * (e.g. on a loaded CI runner), and a fixed sleep that's fine locally can be too short
 	 * there, making the client's connect race the servers' listen() and fail with ECONNREFUSED */
 	if (ok) {
-		ok = readLine(front, line, 5000) && line == "RESULT:SUCCESS:listen";
+		ok = readLine(front, line, 5000) &&
+			line == std::string("RESULT:SUCCESS:listen ") + frontHost + ":" + std::to_string(port);
 		if (!ok)
 			fprintf(stderr, "front did not confirm it is listening (got '%s')\n", line.c_str());
 	}
 
 	if (ok) {
-		ok = readLine(target, line, 5000) && line == "RESULT:SUCCESS:listen";
+		ok = readLine(target, line, 5000) &&
+			line == std::string("RESULT:SUCCESS:listen ") + targetHost + ":" + std::to_string(port);
 		if (!ok)
 			fprintf(stderr, "target did not confirm it is listening (got '%s')\n", line.c_str());
 	}
@@ -110,11 +112,16 @@ bool testRedirect(const char *serverPath, const char *clientPath) {
 
 	/* confirm the live session is really with target by driving a mouse move through it */
 	if (ok) {
-		ok = sendCommand(client, "mouse 10 20") && readLine(target, line, 5000);
-		if (ok) {
-			ok = line.compare(0, strlen("NOTIFICATION:mouse:"), "NOTIFICATION:mouse:") == 0 &&
-				line.find("x=10") != std::string::npos && line.find("y=20") != std::string::npos;
-		}
+		/* skip the client notifications emitted meanwhile */
+		ok = sendCommand(client, "mouse 10 20");
+		while (ok && (ok = readLine(client, line, 5000)) && line.compare(0, 7, "RESULT:") != 0)
+			;
+		ok = ok && line == "RESULT:SUCCESS";
+		if (!ok)
+			fprintf(stderr, "client did not send the mouse move (got '%s')\n", line.c_str());
+	}
+	if (ok) {
+		ok = readLine(target, line, 5000) && line == "NOTIFICATION:mouse:move x=10 y=20";
 		if (!ok)
 			fprintf(stderr, "target did not report the mouse move (got '%s')\n", line.c_str());
 	}

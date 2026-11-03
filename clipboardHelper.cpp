@@ -35,6 +35,7 @@
 #include <Magick++.h>
 
 #include "clipboardHelper.h"
+#include "commandChannel.h"
 
 #define TAG "rdpmocks.clipboard"
 
@@ -278,7 +279,16 @@ bool ClipboardHelper::requestFormat(PendingKind kind, UINT32 formatId, const std
 }
 
 bool ClipboardHelper::setText(const std::string &args, std::string &error) {
-	text_ = unescapeText(args);
+	/* a quoted text gets the escapes of the quoted arguments plus \n and \t */
+	size_t start = args.find_first_not_of(' ');
+	if (start != std::string::npos && args[start] == '\'') {
+		if (!unquoteArg(args, text_, true)) {
+			error = "invalid argument";
+			return false;
+		}
+	} else {
+		text_ = unescapeText(args);
+	}
 	content_ = CONTENT_TEXT;
 	return true;
 }
@@ -332,9 +342,13 @@ bool ClipboardHelper::setFiles(const std::string &args, std::string &error) {
 
 	std::vector<LocalFile> files;
 	std::vector<std::string> names;
-	std::istringstream iss(args);
-	std::string arg;
+	std::vector<std::string> paths;
 	std::error_code ec;
+
+	if (!splitArgs(args, paths)) {
+		error = "invalid argument";
+		return false;
+	}
 
 	auto addEntry = [&](const fs::path &path, const std::string &name) {
 		LocalFile file;
@@ -346,7 +360,7 @@ bool ClipboardHelper::setFiles(const std::string &args, std::string &error) {
 		return !ec;
 	};
 
-	while (iss >> arg) {
+	for (const std::string &arg : paths) {
 		fs::path top = fs::path(arg).lexically_normal();
 		if (top.filename().empty())
 			top = top.parent_path();
@@ -435,9 +449,15 @@ bool ClipboardHelper::handleCommand(const std::string &cmd, const std::string &a
 		bool ok = true;
 		if (cmd == "clipboard_set_text")
 			ok = setText(args, error);
-		else if (cmd == "clipboard_set_image")
-			ok = setImage(args, error);
-		else if (cmd == "clipboard_set_files")
+		else if (cmd == "clipboard_set_image") {
+			std::string path;
+			if (!unquoteArg(args, path)) {
+				error = "invalid argument";
+				ok = false;
+			} else {
+				ok = setImage(path, error);
+			}
+		} else if (cmd == "clipboard_set_files")
 			ok = setFiles(args, error);
 		else
 			content_ = CONTENT_NONE;
@@ -453,7 +473,11 @@ bool ClipboardHelper::handleCommand(const std::string &cmd, const std::string &a
 		return true;
 	}
 
-	std::string target = args;
+	std::string target;
+	if (cmd != "clipboard_get" && !unquoteArg(args, target)) {
+		output_->sendResult(false, "invalid argument");
+		return true;
+	}
 	PendingKind kind = PENDING_RAW;
 	UINT32 formatId = 0;
 	if (cmd == "clipboard_get_text") {
@@ -475,9 +499,13 @@ bool ClipboardHelper::handleCommand(const std::string &cmd, const std::string &a
 		formatId = peerFormatByName(FORMAT_NAME_FILE_GROUP_DESCRIPTOR);
 	} else {
 		/* clipboard_get <formatId|formatName> <file> */
-		size_t space = args.find(' ');
-		std::string format = args.substr(0, space);
-		target = (space == std::string::npos) ? "" : args.substr(space + 1);
+		std::vector<std::string> argv;
+		if (!splitArgs(args, argv, 2)) {
+			output_->sendResult(false, "invalid argument");
+			return true;
+		}
+		std::string format = argv.empty() ? "" : argv[0];
+		target = (argv.size() > 1) ? argv[1] : "";
 
 		char *end = nullptr;
 		unsigned long id = strtoul(format.c_str(), &end, 0);
