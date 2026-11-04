@@ -21,19 +21,16 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
 
-      - name: update package index
-        run: sudo apt update
-
-      - name: Install accendino
-        run: python3 -m pip install accendino
-
+      # installs accendino, builds in .accendino/ci and caches the platform packages and ccache
+      # between runs
       - name: Build RDP mocks
-        run: accendino --prefix=/tmp/rdpmocks --targets=rdp-mocks --debug rdp-mocks.accendino
+        uses: forgiare/accendino@master
+        with:
+          file: rdp-mocks.accendino
+          targets: rdp-mocks
+          extra-args: --prefix=/tmp/rdpmocks
 
       - name: Run unitary test
-        run: meson test --print-errorlogs -C work/build/Ubuntu-Gcc-x86_64-release/rdp-mocks
+        run: meson test --print-errorlogs -C .accendino/ci/build/Ubuntu-Gcc-x86_64-release/rdp-mocks
 
