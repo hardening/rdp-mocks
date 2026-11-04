@@ -60,7 +60,8 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 	 * loaded CI runner), and a fixed sleep that's fine locally can be too short there, making
 	 * the client's connect race the server's listen() and fail with ECONNREFUSED */
 	if (ok) {
-		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:listen";
+		ok = readLine(server, line, 5000) &&
+			line == "RESULT:SUCCESS:listen 127.0.0.1:" + std::to_string(port);
 		if (!ok)
 			fprintf(stderr, "server did not confirm it is listening (got '%s')\n", line.c_str());
 	}
@@ -137,19 +138,29 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 	 * needs to send its Display Control Caps PDU, which is what RdpClientMock::_on_disp_caps
 	 * turns into this notification -- scan for it rather than assume it's the very next line,
 	 * since other channels' own channelConnected/channelDisconnected notifications can still be
-	 * interleaved here */
+	 * interleaved here. The graphics pipeline ("rdpgfx") dynamic virtual channel is negotiated in
+	 * parallel with "disp" (both mocks enable it unconditionally, see
+	 * FreeRDP_SupportGraphicsPipeline in RdpClientMock::_client_preconnect) and has its own
+	 * unconditional "channel ready" notification (RdpClientMock::_on_gfx_caps_confirm) that can
+	 * land before, interleaved with, or after "disp"'s -- wait for both together (rather than one
+	 * after the other) so that whichever arrives first doesn't get discarded while scanning for
+	 * the other, which would otherwise make this hang waiting for a line that already went by. */
 	if (ok) {
-		const char *readyLine = "NOTIFICATION:display:channel ready";
+		const char *dispReadyLine = "NOTIFICATION:display:channel ready";
+		const char *gfxReadyLine = "NOTIFICATION:gfx:channel ready";
 		bool dispReady = false;
-		while (readLine(client, line, 5000)) {
-			if (line == readyLine) {
+		bool gfxReady = false;
+		while (!(dispReady && gfxReady) && readLine(client, line, 5000)) {
+			if (line == dispReadyLine)
 				dispReady = true;
-				break;
-			}
+			else if (line == gfxReadyLine)
+				gfxReady = true;
 		}
-		ok = dispReady;
-		if (!ok)
+		ok = dispReady && gfxReady;
+		if (!dispReady)
 			fprintf(stderr, "client did not report the display channel as ready\n");
+		else if (!gfxReady)
+			fprintf(stderr, "client did not report the gfx channel as ready\n");
 	}
 
 	/* single monitor, default origin/orientation */

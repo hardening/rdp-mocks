@@ -17,10 +17,9 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
-
-#include <unistd.h>
 
 #include "testUtils.h"
 
@@ -32,9 +31,7 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	if (!certDir)
 		return false;
 
-	/* spread out the port a bit to reduce the chance of clashing with a concurrent test run */
-	int port = 30000 + (int)(getpid() % 10000);
-
+	int port = 0;
 	MockProcess server;
 	MockProcess client;
 	bool ok = spawnMock(serverPath, server) && spawnMock(clientPath, client);
@@ -46,7 +43,8 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	ok = ok && sendCommand(server, std::string("autoCert ") + certDir);
 	ok = ok && sendCommand(server, "monitor mouse");
 	ok = ok && sendCommand(server, "monitor states");
-	ok = ok && sendCommand(server, "listen 127.0.0.1:" + std::to_string(port));
+	/* port 0: the system picks a free port, reported in the listen result */
+	ok = ok && sendCommand(server, "listen 127.0.0.1:0");
 
 	std::string line;
 	/* wait for the server to actually confirm it's bound and listening rather than guessing a
@@ -54,7 +52,12 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	 * loaded CI runner), and a fixed sleep that's fine locally can be too short there, making
 	 * the client's connect race the server's listen() and fail with ECONNREFUSED */
 	if (ok) {
-		ok = readLine(server, line, 5000) && line == "RESULT:SUCCESS:listen";
+		const std::string listenPrefix = "RESULT:SUCCESS:listen 127.0.0.1:";
+		ok =
+			readLine(server, line, 5000) && line.compare(0, listenPrefix.size(), listenPrefix) == 0;
+		if (ok)
+			port = atoi(line.c_str() + listenPrefix.size());
+		ok = ok && port > 0 && port <= 65535;
 		if (!ok)
 			fprintf(stderr, "server did not confirm it is listening (got '%s')\n", line.c_str());
 	}
@@ -95,13 +98,18 @@ bool testBasicConnect(const char *serverPath, const char *clientPath) {
 	}
 
 	/* drive a mouse move from the client and check the server reports it via its "monitor mouse"
-	 * notification (NOTIFICATION:mouse:x=<x> y=<y> flags=<flags>) */
+	 * notification */
 	if (ok) {
-		ok = sendCommand(client, "mouse 42 84") && readLine(server, line, 5000);
-		if (ok) {
-			ok = line.compare(0, strlen("NOTIFICATION:mouse:"), "NOTIFICATION:mouse:") == 0 &&
-				line.find("x=42") != std::string::npos && line.find("y=84") != std::string::npos;
-		}
+		/* skip the client notifications emitted meanwhile */
+		ok = sendCommand(client, "mouse 42 84");
+		while (ok && (ok = readLine(client, line, 5000)) && line.compare(0, 7, "RESULT:") != 0)
+			;
+		ok = ok && line == "RESULT:SUCCESS";
+		if (!ok)
+			fprintf(stderr, "client did not send the mouse move (got '%s')\n", line.c_str());
+	}
+	if (ok) {
+		ok = readLine(server, line, 5000) && line == "NOTIFICATION:mouse:move x=42 y=84";
 		if (!ok)
 			fprintf(stderr, "server did not report the mouse move (got '%s')\n", line.c_str());
 	}

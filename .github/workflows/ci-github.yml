@@ -35,5 +35,5 @@ jobs:
         run: accendino --prefix=/tmp/rdpmocks --targets=rdp-mocks --debug rdp-mocks.accendino
 
       - name: Run unitary test
-        run: meson test -C work/build/Ubuntu-Gcc-x86_64-release/rdp-mocks
+        run: meson test --print-errorlogs -C work/build/Ubuntu-Gcc-x86_64-release/rdp-mocks
 

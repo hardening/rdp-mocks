@@ -18,7 +18,6 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-#include <string.h>
 
 #include "outputChannel.h"
 
@@ -29,23 +28,28 @@ OutputChannel::~OutputChannel() {
 	close(outFd_);
 }
 
+bool OutputChannel::writeLine(const std::string &line) {
+	std::lock_guard<std::mutex> lock(mutex_);
+
+	size_t written = 0;
+	while (written < line.size()) {
+		ssize_t ret = write(outFd_, line.c_str() + written, line.size() - written);
+		if (ret <= 0)
+			return false;
+		written += (size_t)ret;
+	}
+	return true;
+}
+
 bool OutputChannel::sendResult(bool success, const std::string &extra) {
-	const char *status = success ? "SUCCESS" : "FAILURE";
-	if (write(outFd_, "RESULT:", strlen("RESULT:")) <= 0 ||
-		write(outFd_, status, strlen(status)) <= 0)
-		return false;
-
-	if (extra.size() &&
-		(write(outFd_, ":", 1) <= 0 || write(outFd_, extra.c_str(), extra.size()) <= 0))
-		return false;
-
-	return write(outFd_, "\n", 1) > 0;
+	std::string line = std::string("RESULT:") + (success ? "SUCCESS" : "FAILURE");
+	if (!extra.empty())
+		line += ":" + extra;
+	return writeLine(line + "\n");
 }
 
 bool OutputChannel::sendNotification(const std::string &category, const std::string &msg) {
-	return write(outFd_, "NOTIFICATION:", strlen("NOTIFICATION:")) > 0 &&
-		write(outFd_, category.c_str(), category.size()) > 0 && write(outFd_, ":", 1) > 0 &&
-		write(outFd_, msg.c_str(), msg.size()) > 0 && write(outFd_, "\n", 1) > 0;
+	return writeLine("NOTIFICATION:" + category + ":" + msg + "\n");
 }
 
 JsonOutputChannel::JsonOutputChannel(int outFd)
@@ -54,8 +58,7 @@ JsonOutputChannel::JsonOutputChannel(int outFd)
 bool JsonOutputChannel::sendLine(const Json::Value &root) {
 	Json::StreamWriterBuilder builder;
 	builder["indentation"] = "";
-	std::string line = Json::writeString(builder, root) + "\n";
-	return write(outFd_, line.c_str(), line.size()) == (ssize_t)line.size();
+	return writeLine(Json::writeString(builder, root) + "\n");
 }
 
 bool JsonOutputChannel::sendResult(bool success, const std::string &extra) {

@@ -121,3 +121,92 @@ CommandChannel::PollResult CommandChannel::treat() {
 CommandChannel::TreatResult CommandChannel::toTreatResult(bool v) {
 	return v ? CommandChannel::TREAT_SUCCESS : CommandChannel::TREAT_ERROR;
 }
+
+/** parses the quoted argument starting at @p pos (on the opening quote), @p pos ends after the
+ * closing quote */
+static bool parseQuoted(const std::string &args, size_t &pos, std::string &out, bool textEscapes) {
+	out.clear();
+	for (pos++; pos < args.size(); pos++) {
+		char c = args[pos];
+		if (c == '\'') {
+			pos++;
+			/* the closing quote ends the argument */
+			return pos == args.size() || args[pos] == ' ';
+		}
+
+		if (c == '\\' && pos + 1 < args.size()) {
+			char next = args[pos + 1];
+			switch (next) {
+			case '\'':
+			case '\\':
+				out += next;
+				pos++;
+				continue;
+			case 'n':
+			case 't':
+				if (textEscapes) {
+					out += (next == 'n') ? '\n' : '\t';
+					pos++;
+					continue;
+				}
+				break;
+			default:
+				break;
+			}
+		}
+		out += c;
+	}
+
+	/* no closing quote */
+	return false;
+}
+
+bool splitArgs(
+	const std::string &args, std::vector<std::string> &out, size_t maxArgs, bool textEscapes) {
+	out.clear();
+
+	size_t pos = 0;
+	while (true) {
+		while (pos < args.size() && args[pos] == ' ')
+			pos++;
+		if (pos == args.size())
+			return true;
+
+		if (maxArgs && out.size() == maxArgs)
+			return false;
+
+		std::string arg;
+		if (args[pos] == '\'') {
+			if (!parseQuoted(args, pos, arg, textEscapes))
+				return false;
+
+			/* a quoted rest of the line must be alone */
+			if (maxArgs && out.size() + 1 == maxArgs &&
+				args.find_first_not_of(' ', pos) != std::string::npos)
+				return false;
+		} else if (maxArgs && out.size() + 1 == maxArgs) {
+			arg = args.substr(pos);
+			pos = args.size();
+		} else {
+			size_t end = args.find(' ', pos);
+			if (end == std::string::npos)
+				end = args.size();
+			arg = args.substr(pos, end - pos);
+			pos = end;
+		}
+		out.push_back(arg);
+	}
+}
+
+bool unquoteArg(const std::string &args, std::string &out, bool textEscapes) {
+	/* not through splitArgs() as an unquoted value is kept as is, leading spaces included */
+	size_t start = args.find_first_not_of(' ');
+	if (start == std::string::npos || args[start] != '\'') {
+		out = args;
+		return true;
+	}
+
+	size_t pos = start;
+	return parseQuoted(args, pos, out, textEscapes) &&
+		args.find_first_not_of(' ', pos) == std::string::npos;
+}

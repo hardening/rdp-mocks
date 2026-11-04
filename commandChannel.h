@@ -19,6 +19,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <freerdp/utils/ringbuffer.h>
 
@@ -71,3 +72,24 @@ protected:
 	bool closed_;
 	RingBuffer buffer_;
 };
+
+/** @brief splits the arguments of a command on spaces.
+ *
+ * An argument starting with a single quote goes up to the closing quote and can contain spaces:
+ * inside the quotes \' is a quote and \\ a backslash, any other backslash is kept as is (so
+ * 'C:\Work Dir' is C:\Work Dir). Elsewhere quotes and backslashes have no special meaning.
+ *
+ * With @p maxArgs non-zero, the last argument is the rest of the line: taken as is, or unquoted
+ * if it is a single quoted argument. With @p textEscapes, \n and \t are also new lines and tabs
+ * inside the quotes.
+ *
+ * @return false if a quoted argument isn't terminated or is directly followed by something
+ * else than a space, or if there are more than @p maxArgs arguments */
+bool splitArgs(const std::string &args, std::vector<std::string> &out, size_t maxArgs = 0,
+	bool textEscapes = false);
+
+/** @brief the argument of a command taking the rest of the line (a path, a name, a text...):
+ * a single quoted argument, or the rest of the line as is, see splitArgs()
+ *
+ * @return false on a malformed quoted argument */
+bool unquoteArg(const std::string &args, std::string &out, bool textEscapes = false);
