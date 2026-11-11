@@ -357,6 +357,22 @@ void RailClient::onWindowDelete(const WINDOW_ORDER_INFO *orderInfo) {
 	notify("window delete id=" + std::to_string(orderInfo->windowId));
 }
 
+void RailClient::onWindowIcon(const WINDOW_ORDER_INFO *orderInfo, const WINDOW_ICON_ORDER *icon) {
+	const ICON_INFO *info = icon->iconInfo;
+	if (!info)
+		return;
+	/* 32 bpp: the pixels with some alpha */
+	size_t opaque = 0;
+	if (info->bpp == 32 && info->bitsColor)
+		for (UINT32 i = 3; i < info->cbBitsColor; i += 4)
+			opaque += info->bitsColor[i] != 0;
+	notify("window icon id=" + std::to_string(orderInfo->windowId) +
+		" big=" + ((orderInfo->fieldFlags & WINDOW_ORDER_FIELD_ICON_BIG) ? "1" : "0") +
+		" w=" + std::to_string(info->width) + " h=" + std::to_string(info->height) +
+		" bpp=" + std::to_string(info->bpp) + " mask=" + std::to_string(info->cbBitsMask) +
+		" opaque=" + std::to_string(opaque));
+}
+
 void RailClient::onMonitoredDesktop(const WINDOW_ORDER_INFO *orderInfo, rdpSettings *settings) {
 	if (!(orderInfo->fieldFlags & WINDOW_ORDER_FIELD_DESKTOP_ARC_COMPLETED))
 		return;

@@ -39,6 +39,7 @@
 
 #include <Magick++.h>
 
+#include "imageLoader.h"
 #include "railCommon.h"
 
 #include "rdp-server-mock.h"
@@ -127,41 +128,6 @@ std::vector<DesktopImageSlice> RdpServerMock::clipImageToMonitors(
 		slices.push_back(slice);
 	}
 	return slices;
-}
-
-/** @brief an image loaded and decoded once, shared by every *_update path below so none of them
- * has to run Magick++ itself -- BGRA/32bpp, top-down, tightly packed (stride == width * 4),
- * matching gdi_get_pixel_format(32) == PIXEL_FORMAT_BGRA32 */
-struct LoadedImage {
-	UINT32 width = 0;
-	UINT32 height = 0;
-	std::vector<BYTE> pixels;
-};
-
-static BOOL loadImagePixels(const std::string &path, LoadedImage &out) {
-	Magick::Image image;
-	try {
-		image.read(path);
-	} catch (Magick::Exception &e) {
-		WLog_ERR(TAG, "unable to load image %s: %s", path.c_str(), e.what());
-		return FALSE;
-	}
-
-	out.width = (UINT32)image.columns();
-	out.height = (UINT32)image.rows();
-	if (!out.width || !out.height) {
-		WLog_ERR(TAG, "invalid image dimensions for %s", path.c_str());
-		return FALSE;
-	}
-
-	out.pixels.resize((size_t)out.width * out.height * 4);
-	try {
-		image.write(0, 0, out.width, out.height, "BGRA", Magick::CharPixel, out.pixels.data());
-	} catch (Magick::Exception &e) {
-		WLog_ERR(TAG, "unable to extract pixels from %s: %s", path.c_str(), e.what());
-		return FALSE;
-	}
-	return TRUE;
 }
 
 /* extracts the tightly packed (stride == width * 4) sub-buffer for one slice out of a full,

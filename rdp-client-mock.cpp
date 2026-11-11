@@ -283,6 +283,7 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 	window->WindowCreate = _client_window_create;
 	window->WindowUpdate = _client_window_update;
 	window->WindowDelete = _client_window_delete;
+	window->WindowIcon = _client_window_icon;
 	window->MonitoredDesktop = _client_monitored_desktop;
 
 	/* this is a mock client for testing, not a real client acting on behalf of a user: never
@@ -412,6 +413,12 @@ BOOL RdpClientMock::_client_window_update(rdpContext *context, const WINDOW_ORDE
 
 BOOL RdpClientMock::_client_window_delete(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo) {
 	((RdpClientMockContext *)context)->mock_->rail_.onWindowDelete(orderInfo);
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_window_icon(
+	rdpContext *context, const WINDOW_ORDER_INFO *orderInfo, const WINDOW_ICON_ORDER *icon) {
+	((RdpClientMockContext *)context)->mock_->rail_.onWindowIcon(orderInfo, icon);
 	return TRUE;
 }
 

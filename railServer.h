@@ -73,6 +73,7 @@ protected:
 	void notify(const std::string &msg);
 	void windowCommand(const std::string &args);
 	void windowDeleteCommand(const std::string &args);
+	void windowIconCommand(const std::string &args);
 	void execResultCommand(const std::string &args);
 	void localMoveSizeCommand(const std::string &args);
 	void minMaxCommand(const std::string &args);

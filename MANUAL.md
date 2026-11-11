@@ -41,7 +41,7 @@ a value starting with a quote), unquoted when it is a single quoted string.
 The commands accepting quoted arguments are: `user`, `password`, `domain`, `authpkglist`,
 `alternateShell`, `shellDirectory`, `remoteApp`, `remoteAppCmdLine`, `rail_exec`, `key_type`,
 `screenshot` and `screenshot_surface` for rdp-client-mock; `cert`, `key`, `autoCert`, `samFile`, `redirect`, `debug`, `bitmap_update`,
-`gfx_update`, `graphics_update` and `rail_window` for rdp-server-mock; the `clipboard_*` commands
+`gfx_update`, `graphics_update`, `rail_window` and `windowIcon` for rdp-server-mock; the `clipboard_*` commands
 for both. A malformed quoted argument (no closing quote, or something else than a space after it)
 is reported like any other invalid argument of the command: `RESULT:FAILURE:invalid argument`
 for the commands emitting a `RESULT`, a command error for the others.
@@ -1012,6 +1012,7 @@ window is announced, and `NOTIFICATION:rail:window update id=<id> ...` when an e
 changes. Only the fields present in the order are listed: `x`/`y` (window offset), `w`/`h`
 (window size) and `title`, last as it may contain spaces.
 * `NOTIFICATION:rail:window delete id=<id>` when a window is deleted.
+* `NOTIFICATION:rail:window icon id=<id> big=<0|1> w=<width> h=<height> bpp=<bpp> mask=<mask bytes> opaque=<pixels with alpha>` for a window icon order.
 * `NOTIFICATION:rail:minmax id=<id> maxW=<w> maxH=<h> maxX=<x> maxY=<y> minTrackW=<w>
 minTrackH=<h> maxTrackW=<w> maxTrackH=<h>` for each Min Max Info PDU: the maximized size and
 position, and the minimum and maximum sizes of a resize.
@@ -1064,6 +1065,28 @@ below), or the client didn't ask for remote applications.
 * `RESULT:FAILURE:invalid argument` if an argument is invalid (window id, decimal or `0x`
 prefixed, a null size, or a malformed quoted title).
 * `RESULT:FAILURE:unknown window` if `rail_window_delete` names a window that wasn't created.
+* `RESULT:FAILURE:send failed` if the order couldn't be sent.
+
+### `windowIcon <windowId> small|big <file>`
+
+Sends a window icon order setting the small or big icon of a window created by `rail_window`,
+from an image file (any format ImageMagick reads, PNG typically), the file name being the rest of
+the line. The icon is sent uncached, as a 32 bpp bitmap keeping the image alpha, with the 1 bpp
+mask of its fully transparent pixels. It is the counterpart of the client's
+`NOTIFICATION:rail:window icon` notification. As the whole order size is a 16 bits field, the
+largest square icon is 125x125 (e.g. 96x96 is fine, 128x128 is too big).
+
+It emits:
+
+* `RESULT:SUCCESS` once the order has been sent.
+* `RESULT:FAILURE:rail not ready` if the activation isn't completed, or the client didn't ask for
+remote applications.
+* `RESULT:FAILURE:invalid argument` if the window id or `small|big` is invalid, or the quoted
+file name is malformed.
+* `RESULT:FAILURE:missing file name` if no file is given.
+* `RESULT:FAILURE:unknown window` if the window wasn't created by `rail_window`.
+* `RESULT:FAILURE:unable to load image` if the file can't be read as an image.
+* `RESULT:FAILURE:icon too big` if the order doesn't fit 64 KB.
 * `RESULT:FAILURE:send failed` if the order couldn't be sent.
 
 ### `rail_localmovesize <windowId> start|end <type> <x> <y>`

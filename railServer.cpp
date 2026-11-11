@@ -19,6 +19,7 @@
 #include "railServer.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -30,6 +31,7 @@
 #include <freerdp/window.h>
 
 #include "commandChannel.h"
+#include "imageLoader.h"
 #include "railCommon.h"
 
 #define TAG "rdpmocks.rail"
@@ -257,6 +259,8 @@ bool RailServer::handleCommand(const std::string &cmd, const std::string &args) 
 		windowCommand(args);
 	else if (cmd == "rail_window_delete")
 		windowDeleteCommand(args);
+	else if (cmd == "windowIcon")
+		windowIconCommand(args);
 	else if (cmd == "rail_exec_result")
 		execResultCommand(args);
 	else if (cmd == "rail_localmovesize")
@@ -379,6 +383,85 @@ void RailServer::windowDeleteCommand(const std::string &args) {
 		update->window->WindowDelete(rdpContext_, &orderInfo) && update->EndPaint(rdpContext_);
 	if (sent)
 		windows_.erase(windowId);
+	output_->sendResult(sent, sent ? "" : "send failed");
+}
+
+void RailServer::windowIconCommand(const std::string &args) {
+	if (!ready_) {
+		output_->sendResult(false, "rail not ready");
+		return;
+	}
+
+	/* <id> small|big <file>, the file name being the rest of the line */
+	std::vector<std::string> argv;
+	UINT32 windowId = 0;
+	if (!splitArgs(args, argv, 3) || argv.size() < 2 || !railParseWindowId(argv[0], windowId) ||
+		(argv[1] != "small" && argv[1] != "big")) {
+		output_->sendResult(false, "invalid argument");
+		return;
+	}
+	if (argv.size() < 3 || argv[2].empty()) {
+		output_->sendResult(false, "missing file name");
+		return;
+	}
+	if (windows_.find(windowId) == windows_.end()) {
+		output_->sendResult(false, "unknown window");
+		return;
+	}
+
+	LoadedImage img;
+	if (!loadImagePixels(argv[2], img)) {
+		output_->sendResult(false, "unable to load image");
+		return;
+	}
+
+	/* a 32 bpp DIB: bottom-up BGRA rows, and the 1 bpp AND mask (set for the transparent pixels)
+	 * with rows padded to 4 bytes. The whole order must fit its 16 bits size field */
+	const size_t colorStride = (size_t)img.width * 4;
+	const size_t maskStride = (((size_t)img.width + 7) / 8 + 3) & ~(size_t)3;
+	const size_t cbBitsColor = colorStride * img.height;
+	const size_t cbBitsMask = maskStride * img.height;
+	if (23 + cbBitsColor + cbBitsMask > UINT16_MAX) {
+		output_->sendResult(false, "icon too big");
+		return;
+	}
+
+	std::vector<BYTE> bitsColor(cbBitsColor);
+	std::vector<BYTE> bitsMask(cbBitsMask, 0);
+	for (UINT32 y = 0; y < img.height; y++) {
+		const BYTE *src = &img.pixels[colorStride * y];
+		const size_t dstRow = img.height - 1 - y;
+		memcpy(&bitsColor[colorStride * dstRow], src, colorStride);
+		for (UINT32 x = 0; x < img.width; x++) {
+			if (!src[x * 4 + 3])
+				bitsMask[maskStride * dstRow + x / 8] |= (BYTE)(0x80 >> (x % 8));
+		}
+	}
+
+	ICON_INFO iconInfo = {};
+	iconInfo.cacheEntry = 0xFFFF; /* not cached */
+	iconInfo.cacheId = 0xFF;
+	iconInfo.bpp = 32;
+	iconInfo.width = img.width;
+	iconInfo.height = img.height;
+	iconInfo.cbBitsColor = (UINT32)cbBitsColor;
+	iconInfo.bitsColor = bitsColor.data();
+	iconInfo.cbBitsMask = (UINT32)cbBitsMask;
+	iconInfo.bitsMask = bitsMask.data();
+
+	WINDOW_ICON_ORDER iconOrder = {};
+	iconOrder.iconInfo = &iconInfo;
+
+	WINDOW_ORDER_INFO orderInfo = {};
+	orderInfo.windowId = windowId;
+	orderInfo.fieldFlags = WINDOW_ORDER_TYPE_WINDOW | WINDOW_ORDER_ICON;
+	if (argv[1] == "big")
+		orderInfo.fieldFlags |= WINDOW_ORDER_FIELD_ICON_BIG;
+
+	rdpUpdate *update = rdpContext_->update;
+	bool sent = update->BeginPaint(rdpContext_) &&
+		update->window->WindowIcon(rdpContext_, &orderInfo, &iconOrder) &&
+		update->EndPaint(rdpContext_);
 	output_->sendResult(sent, sent ? "" : "send failed");
 }
 

@@ -266,6 +266,63 @@ bool checkSolidImage(
 	}
 }
 
+/* writes a @p width x @p height PNG, opaque red on its @p opaqueColumns first columns and fully
+ * transparent after */
+bool writeIcon(const std::string &path, size_t width, size_t height, size_t opaqueColumns) {
+	std::vector<unsigned char> pixels(width * height * 4, 0);
+	for (size_t y = 0; y < height; y++) {
+		for (size_t x = 0; x < opaqueColumns; x++) {
+			unsigned char *pixel = &pixels[(y * width + x) * 4];
+			pixel[0] = 0xff; /* R */
+			pixel[3] = 0xff; /* A */
+		}
+	}
+	try {
+		Magick::Image image(width, height, "RGBA", Magick::CharPixel, pixels.data());
+		image.write(path);
+		return true;
+	} catch (Magick::Exception &e) {
+		fprintf(stderr, "unable to write %s: %s\n", path.c_str(), e.what());
+		return false;
+	}
+}
+
+/* window icons sent by the server: the client reports their size, mask and opaque pixels */
+bool testWindowIcon(Peer &server, Peer &client, const std::string &certDir) {
+	const std::string smallPath = certDir + "/small-icon.png";
+	const std::string bigPath = certDir + "/big icon.png";
+	const std::string hugePath = certDir + "/huge-icon.png";
+	bool ok = writeIcon(smallPath, 16, 16, 8) && writeIcon(bigPath, 32, 32, 32) &&
+		writeIcon(hugePath, 128, 128, 128);
+
+	ok = ok && command(server, "rail_window 3 10 10 200 100 Icons", "RESULT:SUCCESS") &&
+		expectLine(
+			client, "NOTIFICATION:rail:window create id=3 x=10 y=10 w=200 h=100 title=Icons");
+
+	/* 16x16: mask rows of 4 bytes (2 used), the 8 first columns opaque */
+	ok = ok && command(server, "windowIcon 3 small " + smallPath, "RESULT:SUCCESS") &&
+		expectLine(
+			client, "NOTIFICATION:rail:window icon id=3 big=0 w=16 h=16 bpp=32 mask=64 opaque=128");
+	ok = ok && command(server, "windowIcon 3 big '" + bigPath + "'", "RESULT:SUCCESS") &&
+		expectLine(client,
+			"NOTIFICATION:rail:window icon id=3 big=1 w=32 h=32 bpp=32 mask=128 opaque=1024");
+
+	/* errors */
+	ok = ok && command(server, "windowIcon 3 huge " + smallPath, "RESULT:FAILURE:invalid argument");
+	ok =
+		ok && command(server, "windowIcon x small " + smallPath, "RESULT:FAILURE:invalid argument");
+	ok = ok && command(server, "windowIcon 3 small", "RESULT:FAILURE:missing file name");
+	ok = ok && command(server, "windowIcon 42 small " + smallPath, "RESULT:FAILURE:unknown window");
+	ok = ok &&
+		command(server, "windowIcon 3 small " + certDir + "/none.png",
+			"RESULT:FAILURE:unable to load image");
+	ok = ok && command(server, "windowIcon 3 big " + hugePath, "RESULT:FAILURE:icon too big");
+
+	ok = ok && command(server, "rail_window_delete 3", "RESULT:SUCCESS") &&
+		expectLine(client, "NOTIFICATION:rail:window delete id=3");
+	return ok;
+}
+
 /* an EGFX surface mapped to window 1, then dumped by the client */
 bool testWindowSurface(Peer &server, Peer &client, const std::string &certDir) {
 	/* the gfx channel isn't immediately ready */
@@ -332,6 +389,7 @@ bool testNoRemoteApp(Peer &server, Peer &client) {
 	ok = ok && command(client, "rail_window_move 1 0 0 10 10", "RESULT:FAILURE:rail not ready");
 	ok = ok && command(client, "rail_sysparam workarea 0 0 10 10", "RESULT:FAILURE:rail not ready");
 	ok = ok && command(server, "rail_minmax 1 1 1 0 0 1 1 1 1", "RESULT:FAILURE:rail not ready");
+	ok = ok && command(server, "windowIcon 1 small x.png", "RESULT:FAILURE:rail not ready");
 	ok = ok && command(server, "rail on", "RESULT:FAILURE:already connected");
 	return ok;
 }
@@ -359,7 +417,8 @@ int main(int argc, char *argv[]) {
 	Peer server{ "server", {} };
 	Peer client{ "client", {} };
 	bool ok = connectPeers(server, client, serverPath, clientPath, certDir, port, true) &&
-		testRemoteApp(server, client) && testWindowSurface(server, client, certDir);
+		testRemoteApp(server, client) && testWindowIcon(server, client, certDir) &&
+		testWindowSurface(server, client, certDir);
 	ok = disconnectPeers(server, client) && ok;
 
 	Peer server2{ "server", {} };
