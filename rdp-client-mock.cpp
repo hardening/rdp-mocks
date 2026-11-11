@@ -168,6 +168,7 @@ RdpClientMock::RdpClientMock(int fd, OutputChannel *output)
 , rail_(output)
 , input_(output)
 , screenshotsEnabled_(false)
+, gfxDisabled_(false)
 , gdiBitmapUpdate_(nullptr)
 , gdiSurfaceBits_(nullptr)
 , gdiGfxSurfaceCommand_(nullptr)
@@ -281,8 +282,9 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 	 * "rdpgfx" dynamic channel addin at all, so CAPSADVERTISE is never sent and the server-side
 	 * SupportGraphicsPipeline negotiation collapses to FALSE regardless of the server's own
 	 * default */
-	if (!freerdp_settings_set_bool(
-			instance->context->settings, FreeRDP_SupportGraphicsPipeline, TRUE))
+	RdpClientMock *gfxMock = ((RdpClientMockContext *)instance->context)->mock_;
+	if (!freerdp_settings_set_bool(instance->context->settings, FreeRDP_SupportGraphicsPipeline,
+			gfxMock->gfxDisabled_ ? FALSE : TRUE))
 		return FALSE;
 
 	/* same AND-with-server-default pattern as SupportGraphicsPipeline above (see gcc.c's
@@ -959,6 +961,10 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 			return TREAT_ERROR;
 		}
 		return toTreatResult(freerdp_settings_set_uint32(settings, FreeRDP_KeyboardLayout, layout));
+
+	} else if (cmd == "noGfx") {
+		/* read by _client_preconnect: before "connect" */
+		mock_->gfxDisabled_ = true;
 
 	} else if (cmd == "adminMode") {
 		if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, TRUE))

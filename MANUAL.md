@@ -130,6 +130,10 @@ of encoding -- are built from/clipped against. See `gfx_update`/`graphics_update
 ### `authpkglist <list>`
 Sets the auth package list like with the `/auth-pkg-list:` command line argument
 
+### `noGfx`
+Connect without the graphics pipeline (EGFX): the server sends legacy bitmap updates. Must be
+issued before `connect`.
+
 ### `adminMode`
 Instruct to connect in console mode
 

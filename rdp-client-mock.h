@@ -171,6 +171,8 @@ protected:
 	InputClient input_;
 
 	bool screenshotsEnabled_;
+	/* "noGfx": no EGFX (the legacy bitmap updates) */
+	bool gfxDisabled_;
 	pBitmapUpdate gdiBitmapUpdate_;
 	pSurfaceBits gdiSurfaceBits_;
 	pcRdpgfxSurfaceCommand gdiGfxSurfaceCommand_;
