@@ -891,8 +891,23 @@ int RdpClientMock::run() {
 			}
 		}
 
-		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->common_.context))
-			doRun_ = false;
+		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->common_.context)) {
+			/* the connection is lost: FreeRDP reconnects (the cookie of the server's Save
+			 * Session Info, else the credentials), the post-connect running again */
+			if (autoReconnect_ && !freerdp_shall_disconnect_context(&rdpClient_->common_.context)) {
+				WLog_INFO(TAG, "connection lost, auto-reconnecting");
+				connectionEstablished_ = false;
+				if (client_auto_reconnect_ex(rdpClient_->common_.context.instance, nullptr)) {
+					WLog_INFO(TAG, "auto-reconnected");
+					connectionEstablished_ = true;
+					output_->sendResult(true, "auto-reconnected");
+				} else {
+					WLog_ERR(TAG, "auto-reconnection failed");
+					doRun_ = false;
+				}
+			} else
+				doRun_ = false;
+		}
 
 		/* the local moves started by the server send input events, so from this thread */
 		if (doRun_ && railHandle && WaitForSingleObject(railHandle, 0) == WAIT_OBJECT_0)
@@ -989,6 +1004,14 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 	} else if (cmd == "noGfx") {
 		/* read by _client_preconnect: before "connect" */
 		mock_->gfxDisabled_ = true;
+
+	} else if (cmd == "autoReconnect") {
+		/* before "connect": FreeRDP keeps the server's auto-reconnect cookie, and a lost
+		 * connection is reconnected with it */
+		mock_->autoReconnect_ = true;
+		return toTreatResult(
+			freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionEnabled, TRUE) &&
+			freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 5));
 
 	} else if (cmd == "adminMode") {
 		if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, TRUE))

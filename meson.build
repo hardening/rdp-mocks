@@ -176,6 +176,14 @@ if get_option('tests')
         timeout: 30
     )
 
+    test_auto_reconnect_exe = executable('test-auto-reconnect', 'test/test-auto-reconnect.cpp',
+        link_with: test_common_lib
+    )
+    test('auto-reconnect', test_auto_reconnect_exe,
+        args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path()],
+        timeout: 30
+    )
+
     test_input_exe = executable('test-input', 'test/test-input.cpp',
         link_with: test_common_lib
     )

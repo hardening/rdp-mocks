@@ -173,6 +173,9 @@ protected:
 	bool screenshotsEnabled_;
 	/* "noGfx": no EGFX (the legacy bitmap updates) */
 	bool gfxDisabled_;
+	/* "autoReconnect": a lost connection is reconnected (FreeRDP's auto-reconnection: the
+	 * server's cookie, else the credentials) instead of ending the client */
+	bool autoReconnect_ = false;
 	pBitmapUpdate gdiBitmapUpdate_;
 	pSurfaceBits gdiSurfaceBits_;
 	pcRdpgfxSurfaceCommand gdiGfxSurfaceCommand_;

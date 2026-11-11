@@ -179,6 +179,14 @@ chapter at the end of this manual.
 
 See the Notifications chapter below for the emitted `NOTIFICATION:` lines.
 
+### `autoReconnect`
+
+Before `connect`: FreeRDP's auto-reconnection is on (`AutoReconnectionEnabled`, 5 tries). When the
+connection is lost (the server's side closed without a disconnection reason, a network cut), the
+client reconnects instead of ending: with the auto-reconnect cookie the server sent (Save Session
+Info, logon info extended), else with its credentials, and emits `RESULT:SUCCESS:auto-reconnected`
+(or ends when it can't).
+
 ### `scale <percent>`
 
 Sets the desktop scale factor of the GCC Client Core Data (100 to 500, the device scale factor
