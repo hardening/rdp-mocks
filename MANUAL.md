@@ -179,6 +179,12 @@ chapter at the end of this manual.
 
 See the Notifications chapter below for the emitted `NOTIFICATION:` lines.
 
+### `scale <percent>`
+
+Sets the desktop scale factor of the GCC Client Core Data (100 to 500, the device scale factor
+staying 100), what a client on a high DPI display announces at connection. Must be issued before
+`connect`.
+
 ### `dyn-resolution <monitor> [<monitor> ...]`
 
 Sends a new monitor layout to the server over the display control ("disp") dynamic virtual
@@ -188,10 +194,12 @@ channel.
 Each `<monitor>` describes one monitor as:
 
 ```
-<width>x<height>[:originX,originY[:landscape|portrait]]
+<width>x<height>[:originX,originY[:landscape|portrait]][@scale]
 ```
 
 * `width`/`height` are required.
+* `@scale` is the monitor's desktop scale factor, in percent (100 to 500), 100 when omitted:
+`3840x2160:0,0@200 1920x1080:3840,0`.
 * `originX,originY` default to `0,0` when omitted.
 * the orientation defaults to `landscape` when omitted, and can only be given if an origin is
 also given.
@@ -698,6 +706,8 @@ value when the client didn't set it):
 * `NOTIFICATION:clientInfo:alternateShell=<command line>` (see `alternateShell` in
 rdp-client-mock)
 * `NOTIFICATION:clientInfo:shellDirectory=<directory>` (see `shellDirectory` in rdp-client-mock)
+* `NOTIFICATION:clientInfo:desktopScaleFactor=<percent>`, the desktop scale factor of the GCC
+Client Core Data (see `scale` in rdp-client-mock)
 * `NOTIFICATION:clientInfo:keyboardLayout=<layout id>`, e.g. `0x40C` (see `keyboardLayout` in
 rdp-client-mock)
 
@@ -712,9 +722,10 @@ manual.
 
 Emitted for each monitor of a new monitor layout received from the client over the display
 control channel (see `dyn-resolution` in rdp-client-mock), while `monitor resize` is active:
-`NOTIFICATION:monitor:width=<w> height=<h> left=<l> top=<t> primary=<0|1> orientation=<orientation>`.
+`NOTIFICATION:monitor:width=<w> height=<h> left=<l> top=<t> primary=<0|1> orientation=<orientation> scale=<percent>`.
 `<orientation>` is one of `landscape`, `portrait`,
-`landscape_flipped`, `portrait_flipped` (or the raw numeric value for anything else). These are
+`landscape_flipped`, `portrait_flipped` (or the raw numeric value for anything else), `<percent>`
+is the monitor's desktop scale factor. These are
 sent before the `resize` notification below.
 
 ### `resize`

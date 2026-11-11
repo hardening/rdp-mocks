@@ -71,6 +71,7 @@ bool testClientInfo(const char *serverPath, const char *clientPath) {
 	ok = ok && sendCommand(client, "domain 'I\\'m the best'");
 	ok = ok && sendCommand(client, "alternateShell C:\\Program Files\\app.exe --arg value");
 	ok = ok && sendCommand(client, "shellDirectory 'C:\\Work Dir'");
+	ok = ok && sendCommand(client, "scale 150");
 	ok = ok && sendCommand(client, "connect 127.0.0.1:" + std::to_string(port));
 
 	if (ok) {
@@ -92,6 +93,8 @@ bool testClientInfo(const char *serverPath, const char *clientPath) {
 		"NOTIFICATION:clientInfo:domain=I'm the best",
 		"NOTIFICATION:clientInfo:alternateShell=C:\\Program Files\\app.exe --arg value",
 		"NOTIFICATION:clientInfo:shellDirectory=C:\\Work Dir",
+		/* the desktop scale factor of the GCC Client Core Data ("scale") */
+		"NOTIFICATION:clientInfo:desktopScaleFactor=150",
 	};
 	for (const char *expectedLine : expected) {
 		if (!ok)

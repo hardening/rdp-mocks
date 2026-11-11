@@ -43,10 +43,21 @@
 
 #define DYN_RESOLUTION_MAX_MONITORS 16
 
-/* parses one "<width>x<height>[:<originX>,<originY>[:landscape|portrait]]" monitor spec, as used by the
- * "dyn-resolution" command; Left/Top default to (0,0) and Orientation to landscape when omitted */
-static bool parseMonitorSpec(const std::string &spec, DISPLAY_CONTROL_MONITOR_LAYOUT &layout) {
+/* parses one "<width>x<height>[:<originX>,<originY>[:landscape|portrait]][@<scale>]" monitor spec, as
+ * used by the "dyn-resolution" command; Left/Top default to (0,0), Orientation to landscape and the
+ * desktop scale factor (percent, 100..500) to 100 when omitted */
+static bool parseMonitorSpec(const std::string &fullSpec, DISPLAY_CONTROL_MONITOR_LAYOUT &layout) {
 	layout = DISPLAY_CONTROL_MONITOR_LAYOUT{};
+
+	std::string spec = fullSpec;
+	size_t at = spec.find('@');
+	if (at != std::string::npos) {
+		UINT32 scale = (UINT32)strtoul(spec.c_str() + at + 1, nullptr, 10);
+		if (scale < 100 || scale > 500)
+			return false;
+		layout.DesktopScaleFactor = scale;
+		spec = spec.substr(0, at);
+	}
 
 	size_t firstColon = spec.find(':');
 	std::string sizePart = spec.substr(0, firstColon);
@@ -86,11 +97,13 @@ static bool parseMonitorSpec(const std::string &spec, DISPLAY_CONTROL_MONITOR_LA
 		}
 	}
 
+	UINT32 scale = layout.DesktopScaleFactor;
 	layout.Left = originX;
 	layout.Top = originY;
 	layout.Width = width;
 	layout.Height = height;
 	layout.Orientation = orientation;
+	layout.DesktopScaleFactor = scale;
 	return true;
 }
 
@@ -962,6 +975,17 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		}
 		return toTreatResult(freerdp_settings_set_uint32(settings, FreeRDP_KeyboardLayout, layout));
 
+	} else if (cmd == "scale") {
+		/* the desktop scale factor of the GCC Client Core Data (percent, 100..500), before
+		 * "connect"; the device scale factor stays 100 */
+		UINT32 scale = (UINT32)strtoul(args.c_str(), nullptr, 10);
+		if (scale < 100 || scale > 500) {
+			WLog_ERR(TAG, "scale must be 100 to 500: %s", args.c_str());
+			return TREAT_ERROR;
+		}
+		return toTreatResult(
+			freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale) &&
+			freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 100));
 	} else if (cmd == "noGfx") {
 		/* read by _client_preconnect: before "connect" */
 		mock_->gfxDisabled_ = true;
@@ -1096,7 +1120,8 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		/* the first listed monitor is the primary one */
 		monitors[0].Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
 		for (DISPLAY_CONTROL_MONITOR_LAYOUT &monitor : monitors) {
-			monitor.DesktopScaleFactor = 100;
+			if (!monitor.DesktopScaleFactor)
+				monitor.DesktopScaleFactor = 100;
 			monitor.DeviceScaleFactor = 100;
 		}
 

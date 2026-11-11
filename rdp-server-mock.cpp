@@ -1681,6 +1681,11 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 			mock->output_->sendNotification(
 				"clientInfo", std::string(field.name) + "=" + (value ? value : ""));
 		}
+		/* from the GCC Client Core Data */
+		mock->output_->sendNotification("clientInfo",
+			"desktopScaleFactor=" +
+				std::to_string(freerdp_settings_get_uint32(
+					client->context->settings, FreeRDP_DesktopScaleFactor)));
 		mock->output_->sendNotification("clientInfo",
 			"keyboardLayout=" +
 				hexString(
@@ -1950,7 +1955,8 @@ UINT RdpServerMock::_disp_monitor_layout(
 					std::to_string(monitor.Height) + " left=" + std::to_string(monitor.Left) +
 					" top=" + std::to_string(monitor.Top) + " primary=" +
 					std::to_string((monitor.Flags & DISPLAY_CONTROL_MONITOR_PRIMARY) ? 1 : 0) +
-					" orientation=" + orientationToString(monitor.Orientation));
+					" orientation=" + orientationToString(monitor.Orientation) +
+					" scale=" + std::to_string(monitor.DesktopScaleFactor));
 		}
 
 		mock->output_->sendNotification(
