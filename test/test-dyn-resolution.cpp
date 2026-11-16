@@ -27,11 +27,11 @@
 namespace {
 
 /* exercises rdp-client-mock's "dyn-resolution <monitor> [<monitor> ...]" command (each monitor
- * being "widthxheight[:originX,originY[:landscape|portrait]]"): once the client's display
+ * being "widthxheight[:originX,originY[:landscape|portrait]][@scale]"): once the client's display
  * control ("disp") channel is connected, it sends a monitor layout update over it; the server
  * mock has "monitor resize" enabled and reports, for each monitor of the update, a
  * NOTIFICATION:monitor:width=<w> height=<h> left=<l> top=<t> primary=<0|1>
- * orientation=<landscape|portrait> line, followed by the
+ * orientation=<landscape|portrait> scale=<percent> line, followed by the
  * resulting framebuffer size -- the bounding box of the whole layout, not any single monitor --
  * via a NOTIFICATION:resize:width=<w> height=<h> line (see
  * RdpServerMock::_disp_monitor_layout). It also checks that: a "dyn-resolution" sent before the
@@ -179,7 +179,7 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = line ==
 				"NOTIFICATION:monitor:width=1024 height=768 left=0 top=0 primary=1 "
-				"orientation=landscape";
+				"orientation=landscape scale=100";
 		if (!ok)
 			fprintf(
 				stderr, "server did not report the expected monitor (got '%s')\n", line.c_str());
@@ -194,12 +194,13 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 	}
 
 	/* two side-by-side monitors: explicit origin on the second one, and a portrait orientation
-	 * on it too -- checks that the origin/orientation parsing works, that non-overlapping
-	 * monitors are accepted, that each monitor gets its own "monitor" notification, and that the
+	 * and a 150% scale on it too -- checks that the origin/orientation/scale parsing works, that
+	 * non-overlapping monitors are accepted, that each monitor gets its own "monitor"
+	 * notification, and that the
 	 * final "resize" reports the bounding box of both monitors (1824x768: 1024+800 wide, 768
 	 * tall) rather than either monitor's own size */
 	if (ok) {
-		ok = sendCommand(client, "dyn-resolution 1024x768 800x600:1024,0:portrait") &&
+		ok = sendCommand(client, "dyn-resolution 1024x768 800x600:1024,0:portrait@150") &&
 			readLine(client, line, 5000);
 		if (ok) {
 			ok = line == "RESULT:SUCCESS";
@@ -216,7 +217,7 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = line ==
 				"NOTIFICATION:monitor:width=1024 height=768 left=0 top=0 primary=1 "
-				"orientation=landscape";
+				"orientation=landscape scale=100";
 		if (!ok)
 			fprintf(stderr, "server did not report the expected primary monitor (got '%s')\n",
 				line.c_str());
@@ -227,7 +228,7 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 		if (ok)
 			ok = line ==
 				"NOTIFICATION:monitor:width=800 height=600 left=1024 top=0 primary=0 "
-				"orientation=portrait";
+				"orientation=portrait scale=150";
 		if (!ok)
 			fprintf(stderr, "server did not report the expected secondary monitor (got '%s')\n",
 				line.c_str());
@@ -262,6 +263,25 @@ bool testDynResolution(const char *serverPath, const char *clientPath) {
 			fprintf(stderr,
 				"server unexpectedly reported a resize for the rejected overlapping monitors "
 				"(got '%s')\n",
+				line.c_str());
+	}
+
+	/* a scale out of 100..500: rejected client-side too */
+	if (ok) {
+		ok = sendCommand(client, "dyn-resolution 1024x768@50") && readLine(client, line, 5000);
+		if (ok) {
+			ok = line == "RESULT:FAILURE:invalid monitor spec";
+			if (!ok)
+				fprintf(stderr, "client did not reject the invalid scale as expected (got '%s')\n",
+					line.c_str());
+		}
+	}
+
+	if (ok) {
+		ok = !readLine(server, line, 500);
+		if (!ok)
+			fprintf(stderr,
+				"server unexpectedly reported a resize for the invalid scale (got '%s')\n",
 				line.c_str());
 	}
 

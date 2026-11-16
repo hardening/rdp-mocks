@@ -54,6 +54,8 @@ public:
 	void onWindowOrder(
 		bool create, const WINDOW_ORDER_INFO *orderInfo, const WINDOW_STATE_ORDER *windowState);
 	void onWindowDelete(const WINDOW_ORDER_INFO *orderInfo);
+	/* "window icon id= big= w= h= bpp= mask= opaque=" */
+	void onWindowIcon(const WINDOW_ORDER_INFO *orderInfo, const WINDOW_ICON_ORDER *icon);
 	void onMonitoredDesktop(const WINDOW_ORDER_INFO *orderInfo, rdpSettings *settings);
 
 	/** the server mapped an EGFX surface to a window (MapSurfaceToWindow / MapSurfaceToScaledWindow

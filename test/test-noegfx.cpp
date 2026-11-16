@@ -1,5 +1,6 @@
 /**
- * rdpmocks: end-to-end test driving rdp-server-mock's "noegfx" command
+ * rdpmocks: end-to-end test driving rdp-server-mock's "noegfx" and rdp-client-mock's "noGfx"
+ * commands
  *
  * Copyright 2026 David Fort <contact@hardening-consulting.com>
  *
@@ -31,13 +32,16 @@ namespace {
  * legacy BITMAP_UPDATE mechanism (tiled, possibly-several NOTIFICATION:graphics: lines) instead
  * of ever needing to wait on gfx caps -- and the client never emits a NOTIFICATION:gfx: line at
  * all, since the "rdpgfx" DVC never even connects. */
-bool testNoEgfx(const char *serverPath, const char *clientPath, const char *logoPath) {
+/* With @p clientSide, it's the client that doesn't propose the graphics pipeline ("noGfx"), the
+ * server keeping its default: the result must be the same. */
+bool testNoEgfx(
+	const char *serverPath, const char *clientPath, const char *logoPath, bool clientSide) {
 	char certDirTemplate[] = "/tmp/rdpmocks-test-noegfx-XXXXXX";
 	char *certDir = mkCertDir(certDirTemplate);
 	if (!certDir)
 		return false;
 
-	int port = 52000 + (int)(getpid() % 10000);
+	int port = 52000 + (int)(getpid() % 10000) + (clientSide ? 1 : 0);
 
 	MockProcess server;
 	MockProcess client;
@@ -45,7 +49,8 @@ bool testNoEgfx(const char *serverPath, const char *clientPath, const char *logo
 
 	ok = ok && sendCommand(server, "authType tls");
 	ok = ok && sendCommand(server, std::string("autoCert ") + certDir);
-	ok = ok && sendCommand(server, "noegfx");
+	if (!clientSide)
+		ok = ok && sendCommand(server, "noegfx");
 	ok = ok && sendCommand(server, "listen 127.0.0.1:" + std::to_string(port));
 
 	std::string line;
@@ -59,6 +64,8 @@ bool testNoEgfx(const char *serverPath, const char *clientPath, const char *logo
 	ok = ok && sendCommand(client, "authType tls");
 	ok = ok && sendCommand(client, "user testuser");
 	ok = ok && sendCommand(client, "password testpass");
+	if (clientSide)
+		ok = ok && sendCommand(client, "noGfx");
 	ok = ok && sendCommand(client, "connect 127.0.0.1:" + std::to_string(port));
 
 	if (ok) {
@@ -139,8 +146,8 @@ bool testNoEgfx(const char *serverPath, const char *clientPath, const char *logo
 	rmCertDir(certDir);
 
 	if (!ok || !clientOk || !serverOk) {
-		fprintf(stderr, "noegfx TEST FAILED (handshake=%d clientExit=%d serverExit=%d)\n", ok,
-			clientOk, serverOk);
+		fprintf(stderr, "%s TEST FAILED (handshake=%d clientExit=%d serverExit=%d)\n",
+			clientSide ? "noGfx" : "noegfx", ok, clientOk, serverOk);
 		return false;
 	}
 
@@ -159,7 +166,8 @@ int main(int argc, char *argv[]) {
 	const char *clientPath = argv[2];
 	const char *logoPath = argv[3];
 
-	if (!testNoEgfx(serverPath, clientPath, logoPath)) {
+	if (!testNoEgfx(serverPath, clientPath, logoPath, false) ||
+		!testNoEgfx(serverPath, clientPath, logoPath, true)) {
 		fprintf(stderr, "TEST FAILED\n");
 		return 1;
 	}

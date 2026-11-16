@@ -114,6 +114,8 @@ protected:
 	static BOOL _client_window_update(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
 		const WINDOW_STATE_ORDER *windowState);
 	static BOOL _client_window_delete(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo);
+	static BOOL _client_window_icon(
+		rdpContext *context, const WINDOW_ORDER_INFO *orderInfo, const WINDOW_ICON_ORDER *icon);
 	static BOOL _client_monitored_desktop(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo,
 		const MONITORED_DESKTOP_ORDER *monitoredDesktop);
 	static void _on_channel_connected(void *context, const ChannelConnectedEventArgs *e);
@@ -171,6 +173,11 @@ protected:
 	InputClient input_;
 
 	bool screenshotsEnabled_;
+	/* "noGfx": no EGFX (the legacy bitmap updates) */
+	bool gfxDisabled_;
+	/* "autoReconnect": a lost connection is reconnected (FreeRDP's auto-reconnection: the
+	 * server's cookie, else the credentials) instead of ending the client */
+	bool autoReconnect_ = false;
 	pBitmapUpdate gdiBitmapUpdate_;
 	pSurfaceBits gdiSurfaceBits_;
 	pcRdpgfxSurfaceCommand gdiGfxSurfaceCommand_;

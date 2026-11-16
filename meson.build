@@ -36,7 +36,7 @@ rdp_client_mock_exe = executable('rdp-client-mock', 'rdp-client-mock.h', 'rdp-cl
 )
 
 rdp_server_mock_exe = executable('rdp-server-mock', 'rdp-server-mock.h', 'rdp-server-mock.cpp',
-    'railServer.cpp', 'railServer.h',
+    'railServer.cpp', 'railServer.h', 'imageLoader.cpp', 'imageLoader.h',
     link_with: common_lib,
     dependencies: [winpr_deps, winpr_tools_deps, freerdp_deps, freerdp_server_deps, jsoncpp_deps, magick_deps],
     install: true
@@ -172,6 +172,14 @@ if get_option('tests')
         link_with: test_common_lib
     )
     test('client-info', test_client_info_exe,
+        args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path()],
+        timeout: 30
+    )
+
+    test_auto_reconnect_exe = executable('test-auto-reconnect', 'test/test-auto-reconnect.cpp',
+        link_with: test_common_lib
+    )
+    test('auto-reconnect', test_auto_reconnect_exe,
         args: [rdp_server_mock_exe.full_path(), rdp_client_mock_exe.full_path()],
         timeout: 30
     )

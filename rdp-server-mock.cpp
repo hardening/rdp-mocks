@@ -39,6 +39,7 @@
 
 #include <Magick++.h>
 
+#include "imageLoader.h"
 #include "railCommon.h"
 
 #include "rdp-server-mock.h"
@@ -127,41 +128,6 @@ std::vector<DesktopImageSlice> RdpServerMock::clipImageToMonitors(
 		slices.push_back(slice);
 	}
 	return slices;
-}
-
-/** @brief an image loaded and decoded once, shared by every *_update path below so none of them
- * has to run Magick++ itself -- BGRA/32bpp, top-down, tightly packed (stride == width * 4),
- * matching gdi_get_pixel_format(32) == PIXEL_FORMAT_BGRA32 */
-struct LoadedImage {
-	UINT32 width = 0;
-	UINT32 height = 0;
-	std::vector<BYTE> pixels;
-};
-
-static BOOL loadImagePixels(const std::string &path, LoadedImage &out) {
-	Magick::Image image;
-	try {
-		image.read(path);
-	} catch (Magick::Exception &e) {
-		WLog_ERR(TAG, "unable to load image %s: %s", path.c_str(), e.what());
-		return FALSE;
-	}
-
-	out.width = (UINT32)image.columns();
-	out.height = (UINT32)image.rows();
-	if (!out.width || !out.height) {
-		WLog_ERR(TAG, "invalid image dimensions for %s", path.c_str());
-		return FALSE;
-	}
-
-	out.pixels.resize((size_t)out.width * out.height * 4);
-	try {
-		image.write(0, 0, out.width, out.height, "BGRA", Magick::CharPixel, out.pixels.data());
-	} catch (Magick::Exception &e) {
-		WLog_ERR(TAG, "unable to extract pixels from %s: %s", path.c_str(), e.what());
-		return FALSE;
-	}
-	return TRUE;
 }
 
 /* extracts the tightly packed (stride == width * 4) sub-buffer for one slice out of a full,
@@ -292,11 +258,31 @@ BOOL RdpServerMock::ensureMonitorLayout(RdpServerMock *mock) {
 	rdpSettings *settings = mock->peer_->context->settings;
 
 	/* the monitor layout the client announced during the GCC connect sequence (see
-	 * gcc_read_client_monitor_data): by the time PostConnect fires (and so, transitively, this
-	 * first "*_update" call) CONNECTION_STATE_CAPABILITIES_EXCHANGE_MONITOR_LAYOUT has already
-	 * run and guarantees MonitorCount/MonitorDefArray are populated with at least one monitor,
-	 * synthesizing a single one matching DesktopWidth/Height if the client didn't send any (see
-	 * rdp_peer_handle_state_active in libfreerdp/core/peer.c) */
+	 * gcc_read_client_monitor_data). When it announced none, FreeRDP synthesizes a single one
+	 * matching DesktopWidth/Height in CONNECTION_STATE_CAPABILITIES_EXCHANGE_MONITOR_LAYOUT (see
+	 * rdp_peer_handle_state_active in libfreerdp/core/peer.c), but only for a client supporting
+	 * the Monitor Layout PDU (SupportMonitorLayoutPdu) -- FreeRDP's own default is not to, so
+	 * the same is done here for the others, in the settings ensureGfxSurfaces reads too. */
+	if (!freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount)) {
+		const UINT32 width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
+		const UINT32 height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+		rdpMonitor primary = {};
+		primary.width = (INT32)width;
+		primary.height = (INT32)height;
+		primary.is_primary = TRUE;
+		primary.attributes.physicalWidth = width;
+		primary.attributes.physicalHeight = height;
+		primary.attributes.orientation = ORIENTATION_LANDSCAPE;
+		primary.attributes.desktopScaleFactor = 100;
+		primary.attributes.deviceScaleFactor = 100;
+		if (!width || !height ||
+			!freerdp_settings_set_pointer_array(settings, FreeRDP_MonitorDefArray, 0, &primary) ||
+			!freerdp_settings_set_uint32(settings, FreeRDP_MonitorCount, 1)) {
+			WLog_ERR(TAG, "unable to synthesize a monitor layout for the client's desktop");
+			return FALSE;
+		}
+	}
+
 	const UINT32 monitorCount = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
 	const rdpMonitor *monitors =
 		(const rdpMonitor *)freerdp_settings_get_pointer(settings, FreeRDP_MonitorDefArray);
@@ -1661,6 +1647,11 @@ BOOL RdpServerMock::_peer_post_connect(freerdp_peer *client) {
 			mock->output_->sendNotification(
 				"clientInfo", std::string(field.name) + "=" + (value ? value : ""));
 		}
+		/* from the GCC Client Core Data */
+		mock->output_->sendNotification("clientInfo",
+			"desktopScaleFactor=" +
+				std::to_string(freerdp_settings_get_uint32(
+					client->context->settings, FreeRDP_DesktopScaleFactor)));
 		mock->output_->sendNotification("clientInfo",
 			"keyboardLayout=" +
 				hexString(
@@ -1930,7 +1921,8 @@ UINT RdpServerMock::_disp_monitor_layout(
 					std::to_string(monitor.Height) + " left=" + std::to_string(monitor.Left) +
 					" top=" + std::to_string(monitor.Top) + " primary=" +
 					std::to_string((monitor.Flags & DISPLAY_CONTROL_MONITOR_PRIMARY) ? 1 : 0) +
-					" orientation=" + orientationToString(monitor.Orientation));
+					" orientation=" + orientationToString(monitor.Orientation) +
+					" scale=" + std::to_string(monitor.DesktopScaleFactor));
 		}
 
 		mock->output_->sendNotification(

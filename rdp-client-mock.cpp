@@ -43,10 +43,21 @@
 
 #define DYN_RESOLUTION_MAX_MONITORS 16
 
-/* parses one "<width>x<height>[:<originX>,<originY>[:landscape|portrait]]" monitor spec, as used by the
- * "dyn-resolution" command; Left/Top default to (0,0) and Orientation to landscape when omitted */
-static bool parseMonitorSpec(const std::string &spec, DISPLAY_CONTROL_MONITOR_LAYOUT &layout) {
+/* parses one "<width>x<height>[:<originX>,<originY>[:landscape|portrait]][@<scale>]" monitor spec, as
+ * used by the "dyn-resolution" command; Left/Top default to (0,0), Orientation to landscape and the
+ * desktop scale factor (percent, 100..500) to 100 when omitted */
+static bool parseMonitorSpec(const std::string &fullSpec, DISPLAY_CONTROL_MONITOR_LAYOUT &layout) {
 	layout = DISPLAY_CONTROL_MONITOR_LAYOUT{};
+
+	std::string spec = fullSpec;
+	size_t at = spec.find('@');
+	if (at != std::string::npos) {
+		UINT32 scale = (UINT32)strtoul(spec.c_str() + at + 1, nullptr, 10);
+		if (scale < 100 || scale > 500)
+			return false;
+		layout.DesktopScaleFactor = scale;
+		spec = spec.substr(0, at);
+	}
 
 	size_t firstColon = spec.find(':');
 	std::string sizePart = spec.substr(0, firstColon);
@@ -86,11 +97,13 @@ static bool parseMonitorSpec(const std::string &spec, DISPLAY_CONTROL_MONITOR_LA
 		}
 	}
 
+	UINT32 scale = layout.DesktopScaleFactor;
 	layout.Left = originX;
 	layout.Top = originY;
 	layout.Width = width;
 	layout.Height = height;
 	layout.Orientation = orientation;
+	layout.DesktopScaleFactor = scale;
 	return true;
 }
 
@@ -168,6 +181,7 @@ RdpClientMock::RdpClientMock(int fd, OutputChannel *output)
 , rail_(output)
 , input_(output)
 , screenshotsEnabled_(false)
+, gfxDisabled_(false)
 , gdiBitmapUpdate_(nullptr)
 , gdiSurfaceBits_(nullptr)
 , gdiGfxSurfaceCommand_(nullptr)
@@ -269,6 +283,7 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 	window->WindowCreate = _client_window_create;
 	window->WindowUpdate = _client_window_update;
 	window->WindowDelete = _client_window_delete;
+	window->WindowIcon = _client_window_icon;
 	window->MonitoredDesktop = _client_monitored_desktop;
 
 	/* this is a mock client for testing, not a real client acting on behalf of a user: never
@@ -281,8 +296,9 @@ BOOL RdpClientMock::_client_preconnect(freerdp *instance) {
 	 * "rdpgfx" dynamic channel addin at all, so CAPSADVERTISE is never sent and the server-side
 	 * SupportGraphicsPipeline negotiation collapses to FALSE regardless of the server's own
 	 * default */
-	if (!freerdp_settings_set_bool(
-			instance->context->settings, FreeRDP_SupportGraphicsPipeline, TRUE))
+	RdpClientMock *gfxMock = ((RdpClientMockContext *)instance->context)->mock_;
+	if (!freerdp_settings_set_bool(instance->context->settings, FreeRDP_SupportGraphicsPipeline,
+			gfxMock->gfxDisabled_ ? FALSE : TRUE))
 		return FALSE;
 
 	/* same AND-with-server-default pattern as SupportGraphicsPipeline above (see gcc.c's
@@ -397,6 +413,12 @@ BOOL RdpClientMock::_client_window_update(rdpContext *context, const WINDOW_ORDE
 
 BOOL RdpClientMock::_client_window_delete(rdpContext *context, const WINDOW_ORDER_INFO *orderInfo) {
 	((RdpClientMockContext *)context)->mock_->rail_.onWindowDelete(orderInfo);
+	return TRUE;
+}
+
+BOOL RdpClientMock::_client_window_icon(
+	rdpContext *context, const WINDOW_ORDER_INFO *orderInfo, const WINDOW_ICON_ORDER *icon) {
+	((RdpClientMockContext *)context)->mock_->rail_.onWindowIcon(orderInfo, icon);
 	return TRUE;
 }
 
@@ -876,8 +898,23 @@ int RdpClientMock::run() {
 			}
 		}
 
-		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->common_.context))
-			doRun_ = false;
+		if (connectionEstablished_ && !freerdp_check_event_handles(&rdpClient_->common_.context)) {
+			/* the connection is lost: FreeRDP reconnects (the cookie of the server's Save
+			 * Session Info, else the credentials), the post-connect running again */
+			if (autoReconnect_ && !freerdp_shall_disconnect_context(&rdpClient_->common_.context)) {
+				WLog_INFO(TAG, "connection lost, auto-reconnecting");
+				connectionEstablished_ = false;
+				if (client_auto_reconnect_ex(rdpClient_->common_.context.instance, nullptr)) {
+					WLog_INFO(TAG, "auto-reconnected");
+					connectionEstablished_ = true;
+					output_->sendResult(true, "auto-reconnected");
+				} else {
+					WLog_ERR(TAG, "auto-reconnection failed");
+					doRun_ = false;
+				}
+			} else
+				doRun_ = false;
+		}
 
 		/* the local moves started by the server send input events, so from this thread */
 		if (doRun_ && railHandle && WaitForSingleObject(railHandle, 0) == WAIT_OBJECT_0)
@@ -959,6 +996,29 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 			return TREAT_ERROR;
 		}
 		return toTreatResult(freerdp_settings_set_uint32(settings, FreeRDP_KeyboardLayout, layout));
+
+	} else if (cmd == "scale") {
+		/* the desktop scale factor of the GCC Client Core Data (percent, 100..500), before
+		 * "connect"; the device scale factor stays 100 */
+		UINT32 scale = (UINT32)strtoul(args.c_str(), nullptr, 10);
+		if (scale < 100 || scale > 500) {
+			WLog_ERR(TAG, "scale must be 100 to 500: %s", args.c_str());
+			return TREAT_ERROR;
+		}
+		return toTreatResult(
+			freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale) &&
+			freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 100));
+	} else if (cmd == "noGfx") {
+		/* read by _client_preconnect: before "connect" */
+		mock_->gfxDisabled_ = true;
+
+	} else if (cmd == "autoReconnect") {
+		/* before "connect": FreeRDP keeps the server's auto-reconnect cookie, and a lost
+		 * connection is reconnected with it */
+		mock_->autoReconnect_ = true;
+		return toTreatResult(
+			freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionEnabled, TRUE) &&
+			freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 5));
 
 	} else if (cmd == "adminMode") {
 		if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, TRUE))
@@ -1090,7 +1150,8 @@ CommandChannel::TreatResult ClientCommandChannel::onCommand(
 		/* the first listed monitor is the primary one */
 		monitors[0].Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
 		for (DISPLAY_CONTROL_MONITOR_LAYOUT &monitor : monitors) {
-			monitor.DesktopScaleFactor = 100;
+			if (!monitor.DesktopScaleFactor)
+				monitor.DesktopScaleFactor = 100;
 			monitor.DeviceScaleFactor = 100;
 		}
 
